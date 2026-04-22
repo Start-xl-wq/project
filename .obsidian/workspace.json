@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "README.md",
+                "file": "AXI/AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "README"
+              "title": "AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道"
             }
           }
         ]
@@ -182,5 +182,8 @@
     }
   },
   "active": "41e712d2b96b3658",
-  "lastOpenFiles": []
+  "lastOpenFiles": [
+    "README.md",
+    "AXI/AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道.md"
+  ]
 }
