@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "AXI/AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道.md",
+                "file": "MMC/MMC枚举初始化时钟对比.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道"
+              "title": "MMC枚举初始化时钟对比"
             }
           }
         ]
@@ -183,7 +183,11 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
-    "README.md",
-    "AXI/AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道.md"
+    "MMC/eMMC/未命名.md",
+    "MMC/MMC枚举初始化时钟对比.md",
+    "AXI/AXI 总线学习笔记 - 第1课：SoC互联架构与五大通道.md",
+    "MMC/SDIO",
+    "MMC/eMMC",
+    "README.md"
   ]
 }
