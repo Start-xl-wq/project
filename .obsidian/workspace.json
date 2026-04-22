@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "AMBA/三大总线（AXI AHB APB）极简对比笔记.md",
+                "file": "AMBA/AHB/未命名.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "三大总线（AXI AHB APB）极简对比笔记"
+              "title": "未命名"
             }
           }
         ]
@@ -183,8 +183,9 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
-    "PCIe/PCIe 基础之事务层 TLP格式.md",
     "AMBA/三大总线（AXI AHB APB）极简对比笔记.md",
+    "AMBA/AHB/未命名.md",
+    "PCIe/PCIe 基础之事务层 TLP格式.md",
     "AMBA/APB",
     "AMBA/AHB",
     "AMBA",
