@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "AXI/第1课：复杂外设的底层硬件逻辑与总线视角 (以 eMMC 为例).md",
+                "file": "AXI/核心笔记（二）： 突发传输 (Burst Transfer) 与底层时序规范.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "第1课：复杂外设的底层硬件逻辑与总线视角 (以 eMMC 为例)"
+              "title": "核心笔记（二）： 突发传输 (Burst Transfer) 与底层时序规范"
             }
           }
         ]
@@ -181,13 +181,14 @@
       "obsidian-git:Open Git source control": false
     }
   },
-  "active": "41e712d2b96b3658",
+  "active": "1e0e3e5c3c275b3a",
   "lastOpenFiles": [
+    "AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
+    "AXI/核心笔记（二）： 突发传输 (Burst Transfer) 与底层时序规范.md",
     "MMC/SDIO/SDIO 驱动能力.md",
     "MMC/eMMC/eMMC 引导工作模式.md",
     "PCIe/PCIe 基础之事务层 TLP格式.md",
     "MMC/MMC枚举初始化时钟对比.md",
-    "AXI/第1课：复杂外设的底层硬件逻辑与总线视角 (以 eMMC 为例).md",
     "MMC/SDIO",
     "MMC/eMMC",
     "README.md"
