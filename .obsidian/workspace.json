@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "AMBA/AHB/总线基础原理：信号线与读写交互.md",
+                "file": "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "总线基础原理：信号线与读写交互"
+              "title": "核心笔记（一）：基础架构、物理通道与寻址规范"
             }
           }
         ]
