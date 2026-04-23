@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
+                "file": "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "PCIe 基础之Datapass 带宽建模"
+              "title": "芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU"
             }
           }
         ]
@@ -183,15 +183,15 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
-    "PCIe/实战/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (三)：PCIe I_O 事件通知机制.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (六)：PCIe AER错误机制.md",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
     "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (三)：PCIe I_O 事件通知机制.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (六)：PCIe AER错误机制.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
     "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
     "PCIe/链路层/PCIe 基础之链路层 流控.md",
     "PCIe/DataPass",
@@ -208,7 +208,7 @@
     "PCIe/事务层",
     "PCIe/物理层",
     "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
-    "PCIe/实战",
+    "PCIe/实战进阶",
     "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
     "AMBA/三大总线（AXI AHB APB）极简对比笔记.md",
     "AMBA/AHB/总线基础原理：信号线与读写交互.md",
