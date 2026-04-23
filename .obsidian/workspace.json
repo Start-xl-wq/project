@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "PCIe/DataPass/PCIe基础之Datapass 带宽建模.md",
+                "file": "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "PCIe基础之Datapass 带宽建模"
+              "title": "PCIe 基础之Datapass 带宽建模"
             }
           }
         ]
@@ -78,7 +78,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 381.5
   },
   "right": {
     "id": "d0a0e296cb8e0dc4",
@@ -183,8 +183,16 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
+    "PCIe/实战/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (三)：PCIe I_O 事件通知机制.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (六)：PCIe AER错误机制.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
+    "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
     "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
-    "PCIe/DataPass/PCIe基础之Datapass 带宽建模.md",
     "PCIe/链路层/PCIe 基础之链路层 流控.md",
     "PCIe/DataPass",
     "Pasted image 20260423141508.png",
@@ -198,7 +206,6 @@
     "PCIe/事务层/PCIe 基础之事务层-枚举.md",
     "PCIe/物理层/PCIe 基础之物理层-链路建立和训练 LTSSM.md",
     "PCIe/事务层",
-    "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
     "PCIe/物理层",
     "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
     "PCIe/实战",
@@ -211,9 +218,7 @@
     "AMBA/AXI/核心笔记（二）： 突发传输 (Burst Transfer) 与底层时序规范.md",
     "MMC/SDIO/SDIO 驱动能力.md",
     "MMC/eMMC/eMMC 引导工作模式.md",
-    "MMC/MMC枚举初始化时钟对比.md",
     "MMC/SDIO",
-    "MMC/eMMC",
-    "README.md"
+    "MMC/eMMC"
   ]
 }
