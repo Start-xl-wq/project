@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
+                "file": "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "总线生存指南：慢速外设的“单行窄巷”"
+              "title": "芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU"
             }
           }
         ]
@@ -183,8 +183,10 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
-    "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
     "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
+    "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+    "PCIe/实战",
+    "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
     "AMBA/三大总线（AXI AHB APB）极简对比笔记.md",
     "AMBA/AHB/总线基础原理：信号线与读写交互.md",
     "PCIe/PCIe 基础之事务层 TLP格式.md",
