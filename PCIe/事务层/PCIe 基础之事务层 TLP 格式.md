@@ -1,4 +1,3 @@
-
 ## 1) TLP Header 先分两件事：Format + Type（这条包“是什么”）
 ### Format（Fmt）
 决定两件事：
@@ -34,7 +33,6 @@
 - “Length=1”就是 4B，“Length=16”就是 64B —— 抓包时很常用
 
 ---
-
 
 ## 3) Requester ID（谁发起的请求）
 - 形式：**Bus/Device/Function（BDF）**

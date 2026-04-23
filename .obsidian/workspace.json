@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+                "file": "PCIe/事务层/PCIe 基础之事务层 TLP 格式.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU"
+              "title": "PCIe 基础之事务层 TLP 格式"
             }
           }
         ]
@@ -183,13 +183,17 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
-    "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
+    "PCIe/事务层/PCIe 基础之事务层-枚举.md",
+    "PCIe/物理层/PCIe 基础之物理层-链路建立和训练 LTSSM.md",
+    "PCIe/事务层",
     "PCIe/实战/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+    "PCIe/物理层",
+    "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
     "PCIe/实战",
     "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
     "AMBA/三大总线（AXI AHB APB）极简对比笔记.md",
     "AMBA/AHB/总线基础原理：信号线与读写交互.md",
-    "PCIe/PCIe 基础之事务层 TLP格式.md",
+    "PCIe/事务层/PCIe 基础之事务层 TLP 格式.md",
     "AMBA/APB",
     "AMBA/AHB",
     "AMBA",
