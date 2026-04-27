@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+                "file": "README.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU"
+              "title": "README"
             }
           }
         ]
@@ -183,9 +183,9 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
     "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (三)：PCIe I_O 事件通知机制.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",

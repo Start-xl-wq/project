@@ -1,2 +1,1 @@
-# project
-my learn 
+study notes
