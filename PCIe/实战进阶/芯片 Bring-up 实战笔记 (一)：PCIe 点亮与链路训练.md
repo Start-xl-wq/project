@@ -35,5 +35,10 @@
 * 排查点： 卡在 Polling 多为信号完整性 (SI) 问题。走线太长、干扰大、板材差导致眼图闭合，CDR 无法锁定。
 ## 3. Configuration (配置阶段) —— “摸清家底，自适应降级”
 * 基本概念：Lane (通道)。1 个 Lane = 1 个全双工数据通路 = 4根线（1对 TX 差分线 + 1对 RX 差分线）。PCIe x1 就是 1 个 Lane，x16 就是 16 个 Lane。
-* 核心动作（Link Width Negotiation 链路宽度协商）：
-    * Host 会在插槽的所有物理 Lane 上发信号探测
+• 核心动作（Link Width Negotiation 链路宽度协商）：
+    ◦ Host 会在插槽的所有物理 Lane 上发信号探测。
+    ◦ 如果 x16 的插槽上只插了 x1 的设备（比如 Wi-Fi 模组），Host 发现只有 Lane 0 成功锁定了信号。
+    ◦ 双方协商达成一致：将实际运行的链路宽度“降级”配置为 x1，并关闭其余 15 个 Lane 以节省功耗。
+    • 其他动作： 处理 Lane 翻转（Lane Reversal）或极性翻转（Polarity Inversion），容错硬件接线错误。
+---
+总结语：万用表量出“电源、时钟、复位”决定了芯片能不能活；LTSSM 的 Detect -> Polling -> Configuration 决定了底层链路能不能通。只有打通了这几关，才能在 Linux 里用 lspci 看到 Vendor ID / Device ID，进入上层软件的世界。
