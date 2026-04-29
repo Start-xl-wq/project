@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "PCIe/物理层/PCIe 基础之物理层-信号.md",
+                "file": "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "PCIe 基础之物理层-信号"
+              "title": "PCIe 基础之Datapass 带宽建模"
             }
           }
         ]
@@ -183,6 +183,8 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
+    "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
+    "PCIe/物理层/PCIe 基础之物理层-信号.md",
     "PCIe/物理层/PCIe 基础之物理层-链路建立和训练 LTSSM.md",
     "PCIe/事务层/PCIe 基础之事务层-枚举.md",
     "PCIe/事务层/PCIe 基础之事务层 TLP 性能.md",
@@ -200,13 +202,11 @@
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
     "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
-    "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
     "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
     "README.md",
     "PCIe/DataPass",
     "Pasted image 20260423141508.png",
     "PCIe/链路层",
-    "PCIe/物理层/PCIe 基础之物理层-信号.md",
     "PCIe/事务层",
     "PCIe/物理层",
     "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
