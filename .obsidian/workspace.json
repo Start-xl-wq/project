@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
+                "file": "PCIe/事务层/PCIe 基础之事务层 TLP 格式.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理"
+              "title": "PCIe 基础之事务层 TLP 格式"
             }
           }
         ]
@@ -183,6 +183,13 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
+    "PCIe/链路层/PCIe 基础之链路层 流控.md",
+    "PCIe/链路层/PCIe 基础之链路层 DLLP.md",
+    "PCIe/链路层/PCIe 基础之链路层 基础概念.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (六)：PCIe AER错误机制.md",
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (三)：PCIe I_O 事件通知机制.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
@@ -190,16 +197,9 @@
     "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
     "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
     "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (六)：PCIe AER错误机制.md",
     "README.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
-    "PCIe/链路层/PCIe 基础之链路层 流控.md",
     "PCIe/DataPass",
     "Pasted image 20260423141508.png",
-    "PCIe/链路层/PCIe 基础之链路层 基础概念.md",
-    "PCIe/链路层/PCIe 基础之链路层 DLLP.md",
     "PCIe/事务层/PCIe 基础之事务层 TLP 性能.md",
     "PCIe/链路层",
     "PCIe/事务层/PCIe 基础之事务层 TLP 机制.md",
