@@ -11,14 +11,12 @@
             "id": "41e712d2b96b3658",
             "type": "leaf",
             "state": {
-              "type": "markdown",
+              "type": "pdf",
               "state": {
-                "file": "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
-                "mode": "source",
-                "source": false
+                "file": "MMC/SPEC/sdips_gravityxr_sdio_emmc_host_iip_databook.pdf"
               },
-              "icon": "lucide-file",
-              "title": "芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质"
+              "icon": "lucide-file-text",
+              "title": "sdips_gravityxr_sdio_emmc_host_iip_databook"
             }
           }
         ]
@@ -184,6 +182,15 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
+    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
+    "MMC/SPEC/SD",
+    "MMC/SPEC/新建文件夹",
+    "MMC/SPEC/sdips_gravityxr_sdio_emmc_host_iip_databook.pdf",
+    "MMC/SPEC/SD4.0中文协议.pdf",
+    "MMC/SPEC/PartA2_SD Host_Controller_Simplified_Specification_Ver4.20.pdf",
+    "MMC/SPEC/Part1_Physical_Layer_Simplified_Specification_Ver9.00.pdf",
+    "MMC/SPEC/SDUC-Host-Implementation-Guideline_Ver1.00.pdf",
+    "MMC/SPEC",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
@@ -211,22 +218,13 @@
     "PCIe/链路层/PCIe 基础之链路层 DLLP.md",
     "PCIe/链路层/PCIe 基础之链路层 基础概念.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
     "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
     "README.md",
     "PCIe/DataPass",
     "PCIe/链路层",
-    "PCIe/事务层",
-    "PCIe/物理层",
     "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md",
-    "PCIe/实战进阶",
     "AMBA/三大总线（AXI AHB APB）极简对比笔记.md",
-    "AMBA/AHB/总线基础原理：信号线与读写交互.md",
-    "AMBA/APB",
-    "AMBA/AHB",
-    "AMBA",
-    "MMC/SDIO",
-    "MMC/eMMC"
+    "AMBA/AHB/总线基础原理：信号线与读写交互.md"
   ]
 }
