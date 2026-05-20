@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/2.0/第 1 周：物理链路建立与电气协商.md",
+                "file": "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "第 1 周：物理链路建立与电气协商"
+              "title": "USB驱动开发笔记（一）：物理链路建立与电气协商"
             }
           }
         ]
@@ -185,7 +185,7 @@
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
     "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
-    "USB/2.0/第 1 周：物理链路建立与电气协商.md",
+    "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
     "MMC/SPEC/sdips_gravityxr_sdio_emmc_host_iip_databook.pdf",
     "USB/3.0",
     "USB/2.0",
