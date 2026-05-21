@@ -184,6 +184,8 @@
   },
   "active": "41e712d2b96b3658",
   "lastOpenFiles": [
+    "Pasted image 20260521104655.png",
+    "Pasted image 20260521104619.png",
     "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
     "USB/2.0/未命名.md",
     "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
@@ -227,7 +229,6 @@
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md",
     "PCIe/实战进阶/芯片 Bring-up 实战笔记 (一)：PCIe 点亮与链路训练.md",
     "AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md",
-    "README.md",
-    "AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md"
+    "README.md"
   ]
 }
