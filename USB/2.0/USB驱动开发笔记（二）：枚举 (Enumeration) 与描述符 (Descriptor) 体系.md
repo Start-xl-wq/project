@@ -40,9 +40,44 @@ USB 协议规定，设备必须以严格分级的数据结构向 Host 汇报身�
 - **开发重点**：编写 USB 固件的首要任务，就是写好 EP0 收发请求（Standard Requests）的逻辑。
 
 ## 三、 🗺️ 完整枚举过程时序流程图 (Enumeration Flow)
+```mermaid 
+sequenceDiagram
+    participant Host as USB Host (主机)
+    participant Device as USB Device (设备)
 
+    Note over Host, Device: 【0】物理连接阶段
+    Device->>Host: 插入设备，D+ 或 D- 上拉电阻被检测到
+    Host->>Device: 第 1 次 Bus Reset (总线复位) & Chirp 握手确定速度
 
-![[Pasted image 20260521104655.png]]
+    Note over Host, Device: 【1】地址 0 试探 (获取 EP0 肚量)
+    Host->>Device: Get Descriptor (Device) [发往 默认地址0]
+    Device-->>Host: 返回前 8 个字节 (包含 bMaxPacketSize0)
+
+    Note over Host, Device: 【2】二次复位 (Windows 典型规范行为)
+    Host->>Device: 第 2 次 Bus Reset (总线复位，设备状态清零)
+
+    Note over Host, Device: 【3】分配门牌号 (Set Address)
+    Host->>Device: Set Address (例如分配地址为 5) [发往 地址0]
+    Device-->>Host: ACK 确认 (从此刻起，设备只响应地址 5)
+
+    Note over Host, Device: 【4】获取完整“设备”描述符
+    Host->>Device: Get Descriptor (Device) [发往 地址5]
+    Device-->>Host: 返回完整 18 字节 (包含完整的 VID, PID)
+    Note over Host: OS 拿到 VID/PID，开始在本地寻找对应驱动
+
+    Note over Host, Device: 【5】获取“配置”描述符集合 (连锅端)
+    Host->>Device: Get Descriptor (Configuration) [请求前 9 字节]
+    Device-->>Host: 返回配置描述符头 (包含整个集合的“总长度”)
+    Host->>Device: Get Descriptor (Configuration) [请求“总长度”的字节数]
+    Device-->>Host: 连锅端返回：1个配置 + 所有接口 + 所有端点描述符
+
+    Note over Host, Device: 【6】激活配置 (Set Configuration)
+    Note over Host: OS 分析完结构图，为各接口加载对应驱动程序
+    Host->>Device: Set Configuration (配置编号, 通常为 1)
+    Device-->>Host: ACK 确认
+
+    Note over Host, Device: 🎉 枚举完成！设备进入正常工作状态 (Ready)
+```
 
 ## 四、 🕵️ 核心步骤详解（补充说明）
 
