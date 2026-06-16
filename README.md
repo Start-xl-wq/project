@@ -1,1 +1,1 @@
-study notes
+study notes.
