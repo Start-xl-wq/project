@@ -1,200 +1,56 @@
-# DWC3/USB 学习路线
+# DWC3 device/gadget 
 
-## 1. 定位
+如果你现在开始学 **DWC3 device 模式**，建议不要一上来就看 `ep0.c` 或 TRB 细节，而是按下面顺序看。
 
-重点不是重写 USB 协议栈，而是让 DWC3 USB 控制器在本 SoC 上正确工作。
-
-日常重点：
-
-- DTS / binding
-- SoC glue driver
-- clock / reset / power domain
-- regulator
-- USB2 PHY / USB3 PHY
-- Type-C / role switch / VBUS / ID
-- runtime PM / system suspend / wakeup
-- SoC wrapper register
-- quirks / errata workaround
-
-通用层一般不优先修改，但需要理解：
-
-- DWC3 core
-- DWC3 gadget
-- DWC3 ep0
-- xHCI
-- USB core
-- gadget framework
-
----
-
-## 2. Linux USB/DWC3 分层
+核心顺序：
 
 ```text
-SoC glue / wrapper
-    ↓
-DWC3 core
-    ↓
-host mode                 device/gadget mode
-    ↓                          ↓
-xHCI                      DWC3 gadget / ep0
-    ↓                          ↓
-USB core                  gadget framework
-    ↓                          ↓
-class driver              function driver
+1. drivers/usb/dwc3/core.c
+2. drivers/usb/dwc3/gadget.c
+3. drivers/usb/dwc3/ep0.c
+4. drivers/usb/dwc3/core.h / gadget.h
+5. drivers/usb/gadget/composite.c
+6. drivers/usb/gadget/configfs.c
+7. drivers/usb/gadget/function/
 ```
 
-硬件视角：
-
-```text
-connector / Type-C / VBUS / ID
-    ↓
-USB2 PHY / USB3 PHY
-    ↓
-SoC wrapper
-    ↓
-DWC3 controller
-    ↓
-DMA / interrupt / memory
-```
-
----
-
-## 3. 推荐学习顺序
-
-整体路线：
-
-```text
-1. 先看本 SoC 的 DTS + glue driver
-2. 看 DWC3 core probe/init/mode 选择
-3. 学 USB2.0 基本枚举流程
-4. 学 device/gadget EP0 枚举
-5. 学 host/xHCI root hub 和枚举路径
-6. 学 DWC3 gadget 非 EP0 传输和 event/TRB
-7. 学 xHCI URB/TRB/event ring
-8. 学 USB3 PHY/link/Type-C/role switch
-9. 学 PM/wakeup/suspend/resume
-```
-
-一句话：
-
-```text
-先 glue + core，
-再 USB2 枚举，
-再 device/host 两条路径，
-最后 USB3、Type-C、PM。
-```
-
----
-
-## 4. 工作收益优先级
-
-对原厂适配最有价值的顺序：
-
-```text
-DTS/glue/PHY/clock/reset/power
-    ↓
-dr_mode/role/VBUS
-    ↓
-DWC3 core probe/init
-    ↓
-USB2 枚举问题定位
-    ↓
-USB3/Type-C 问题定位
-    ↓
-xHCI/gadget 传输细节
-```
-
-精力分配建议：
-
-```text
-SoC 集成层：50%
-DWC3 core：20%
-device/gadget/EP0：15%
-host/xHCI：15%
-```
-
-如果项目偏 device，增加 gadget/EP0 比例。
-如果项目偏 host，增加 xHCI/host 比例。
-
----
-
-## 5. 第一阶段：SoC 集成层
-
-这是原厂驱动工程师最常修改的部分，应该最先看。
-
-重点内容：
-
-- compatible 怎么匹配
-- reg 资源怎么获取
-- interrupts 怎么配置
-- clock 怎么 enable
-- reset 怎么 deassert
-- power domain 怎么打开
-- regulator 怎么控制
-- USB2/USB3 PHY 怎么关联
-- dr_mode 怎么决定 host/device/otg
-- maximum-speed 怎么限制速度
-- Type-C / role switch 怎么接入
-- VBUS 由谁控制
-- wrapper register 需要配置什么
-- runtime PM 怎么处理
-- suspend/resume 怎么恢复
-- 是否需要 SoC-specific quirk
-
-常见 DTS 结构：
-
-```dts
-usb_wrapper: usb@xxxx0000 {
-    compatible = "vendor,soc-dwc3";
-    reg = <...>;
-    clocks = <...>;
-    resets = <...>;
-    power-domains = <...>;
-
-    dwc3: usb@yyyy0000 {
-        compatible = "snps,dwc3";
-        reg = <...>;
-        interrupts = <...>;
-
-        dr_mode = "otg";
-        maximum-speed = "super-speed";
-
-        phys = <&usb2phy>, <&usb3phy>;
-        phy-names = "usb2-phy", "usb3-phy";
-
-        snps,dis_u2_susphy_quirk;
-        snps,dis_u3_susphy_quirk;
-    };
-};
-```
-
-看 DTS 时要能回答：
-
-- DWC3 core 的寄存器基地址在哪里？
-- DWC3 IRQ 是哪个？
-- USB2 PHY 是哪个？
-- USB3 PHY 是哪个？
-- 当前是 host、peripheral 还是 otg？
-- maximum-speed 是什么？
-- VBUS 由谁控制？
-- Type-C controller 是谁？
-- role switch 从哪里来？
-- clock/reset/power domain 是否完整？
-- 有没有 wrapper register？
-- 有没有 SoC-specific quirk？
-
----
-
-## 6. 第二阶段：DWC3 core 初始化
-
-重点文件：
+对于 DWC3 自身来说，最重要的是：
 
 ```text
 drivers/usb/dwc3/core.c
-drivers/usb/dwc3/core.h
+drivers/usb/dwc3/gadget.c
+drivers/usb/dwc3/ep0.c
 ```
 
-重点函数：
+---
+
+# 1. 先看 `drivers/usb/dwc3/core.c`
+
+## 这个文件在做什么
+
+`core.c` 是 DWC3 控制器的总入口。
+
+它负责把 DWC3 这个硬件 IP 初始化起来，然后根据 `dr_mode` 决定当前工作在：
+
+```text
+host
+device/peripheral
+otg/drd
+```
+
+对于 device 学习来说，`core.c` 的作用是：
+
+```text
+先把 DWC3 硬件初始化好
+然后调用 dwc3_gadget_init()
+把 DWC3 注册成一个 UDC
+```
+
+---
+
+## 重点看什么函数
+
+优先看：
 
 ```c
 dwc3_probe()
@@ -204,183 +60,750 @@ dwc3_core_soft_reset()
 dwc3_phy_setup()
 dwc3_event_buffers_setup()
 dwc3_core_init_mode()
-dwc3_suspend()
-dwc3_resume()
+dwc3_remove()
 ```
 
-初始化流程：
+device 相关重点看：
+
+```c
+dwc3_core_init_mode()
+```
+
+里面会根据模式调用：
+
+```c
+dwc3_gadget_init(dwc);
+```
+
+---
+
+## 大致流程
 
 ```text
 dwc3_probe()
     ↓
-解析 DTS / platform data
+解析 DTS 属性
     ↓
-获取 resource / irq
+获取寄存器、IRQ、PHY、clock、reset 等资源
     ↓
-获取 USB2 PHY / USB3 PHY
+读取 DWC3 IP 版本和硬件参数
     ↓
-读取 DWC3 revision / GHWPARAMS
+dwc3_core_init()
     ↓
-core soft reset
+DWC3 core soft reset
     ↓
-PHY setup
+PHY 初始化
     ↓
-配置 global register
+event buffer 初始化
     ↓
-分配 event buffer
+dwc3_core_init_mode()
     ↓
-根据 dr_mode 初始化 host/gadget/drd
+如果是 peripheral/device 模式
     ↓
-注册 PM
+dwc3_gadget_init()
 ```
 
-这一阶段要理解：
+---
+
+## 你看 `core.c` 时要抓住什么
+
+你不需要一开始把所有 global register 都看懂。
+
+第一遍只需要搞清楚：
+
+```text
+DWC3 是怎么 probe 的
+DWC3 是怎么读取 DTS 的
+DWC3 是怎么判断 device/host/otg 模式的
+DWC3 是什么时候进入 gadget 初始化的
+DWC3 的 IRQ/event buffer 是怎么准备的
+```
+
+重点关注这些概念：
 
 - `dr_mode`
 - `maximum-speed`
-- DWC3 revision
+- `usb2-phy`
+- `usb3-phy`
+- `event buffer`
 - `GSNPSID`
 - `GHWPARAMS`
-- event buffer
-- global register
-- core soft reset
-- USB2 PHY / USB3 PHY
-- quirks
-- runtime PM
-- system suspend/resume
+- `revision`
+- `dwc3_core_init_mode()`
 
 ---
 
-## 7. 第三阶段：USB2.0 基础枚举
+# 2. 第二个看 `drivers/usb/dwc3/gadget.c`
 
-先学 USB2.0，不要一开始就钻 USB3.0。
+## 这个文件在做什么
 
-USB2 是理解 USB 枚举和基本传输的基础。
+`gadget.c` 是 DWC3 的 **UDC driver 主体**。
 
-需要掌握：
-
-- VBUS
-- D+ / D-
-- pull-up / pull-down
-- full-speed / high-speed
-- chirp
-- reset
-- setup packet
-- control transfer
-- device descriptor
-- configuration descriptor
-- interface descriptor
-- endpoint descriptor
-- SET_ADDRESS
-- SET_CONFIGURATION
-- bulk / interrupt / isochronous endpoint
-
-Host 视角枚举流程：
+也就是说：
 
 ```text
-设备插入
-    ↓
-host 检测 connect
-    ↓
-host reset port
-    ↓
-获取 device descriptor
-    ↓
-set address
-    ↓
-获取 configuration descriptor
-    ↓
-set configuration
-    ↓
-匹配 interface/class driver
-    ↓
-设备可用
+DWC3 device 模式的大部分逻辑都在 gadget.c
 ```
 
-Device/Gadget 视角枚举流程：
+它负责把 Linux gadget framework 的动作，转换成 DWC3 硬件操作。
+
+比如：
 
 ```text
-PC host reset
+gadget framework 要 enable endpoint
     ↓
-DWC3 收到 reset/connect done
+gadget.c 发送 DWC3 endpoint command
+
+gadget framework 要 queue usb_request
     ↓
-EP0 收到 SETUP packet
+gadget.c 准备 TRB
+
+DWC3 硬件产生 event
     ↓
-gadget/composite 返回 descriptor
+gadget.c 解析 event
     ↓
-处理 SET_ADDRESS
-    ↓
-处理 SET_CONFIGURATION
-    ↓
-function enable
-    ↓
-非 EP0 endpoint enable
-    ↓
-设备可用
+回调 request complete
 ```
 
 ---
 
-## 8. 第四阶段：Device/Gadget 路径
+## 这个文件最重要
 
-建议先看 device/gadget 的 EP0 枚举，因为更容易理解 USB 协议本质。
-
-学习顺序：
-
-```text
-configfs gadget
-    ↓
-composite framework
-    ↓
-UDC bind
-    ↓
-DWC3 gadget init
-    ↓
-EP0 枚举
-    ↓
-非 EP0 endpoint 传输
-```
-
-重点文件：
+如果你只问 DWC3 device 应该重点看哪个文件：
 
 ```text
 drivers/usb/dwc3/gadget.c
-drivers/usb/dwc3/ep0.c
-drivers/usb/gadget/composite.c
-drivers/usb/gadget/configfs.c
-drivers/usb/gadget/function/
 ```
 
-重点函数：
+它就是 DWC3 device 模式主线。
+
+---
+
+## 重点看什么函数
+
+### 初始化相关
 
 ```c
 dwc3_gadget_init()
+dwc3_gadget_free_endpoints()
+dwc3_gadget_init_endpoints()
 dwc3_gadget_start()
+dwc3_gadget_stop()
+```
+
+它们负责：
+
+```text
+创建 gadget 设备
+初始化 endpoint 对象
+注册 UDC
+和 gadget framework 建立连接
+```
+
+---
+
+### pullup/connect 相关
+
+```c
 dwc3_gadget_pullup()
 dwc3_gadget_run_stop()
-dwc3_ep0_interrupt()
-dwc3_ep0_handle_setup()
+```
+
+它们负责：
+
+```text
+控制 device 是否对 host 可见
+```
+
+简单理解：
+
+```text
+pullup = 让 PC/Host 看到这个 USB device
+```
+
+如果 gadget 没有 pullup，PC 一般不会开始枚举。
+
+---
+
+### endpoint 相关
+
+```c
+dwc3_gadget_ep_enable()
+dwc3_gadget_ep_disable()
+dwc3_gadget_ep_queue()
+dwc3_gadget_ep_dequeue()
+```
+
+它们对应 gadget framework 的 endpoint 操作。
+
+例如 function driver 调用：
+
+```c
+usb_ep_enable()
+usb_ep_queue()
+```
+
+最后会走到 DWC3 的：
+
+```c
 dwc3_gadget_ep_enable()
 dwc3_gadget_ep_queue()
+```
+
+---
+
+### TRB/传输相关
+
+```c
 dwc3_prepare_trbs()
+dwc3_prepare_one_trb()
 dwc3_send_gadget_ep_cmd()
+dwc3_gadget_start_isoc_quirk()
+```
+
+它们负责：
+
+```text
+把 usb_request 转换成 DWC3 硬件认识的 TRB
+然后通过 endpoint command 启动传输
+```
+
+---
+
+### event/中断相关
+
+```c
+dwc3_gadget_interrupt()
+dwc3_process_event_buf()
+dwc3_process_event_entry()
+dwc3_gadget_event_handler()
+dwc3_endpoint_interrupt()
 dwc3_endpoint_transfer_complete()
 ```
 
-关键调用链：
+它们负责：
 
 ```text
-gadget function/configfs 创建
+处理 DWC3 硬件事件
+比如 reset、connect、disconnect、setup packet、transfer complete
+```
+
+---
+
+## `gadget.c` 第一遍怎么看
+
+不要第一遍就钻每个 TRB bit。
+
+建议先按这个主线看：
+
+```text
+dwc3_gadget_init()
     ↓
-gadget bind 到 UDC
+DWC3 怎么注册成 UDC
+
+dwc3_gadget_pullup()
     ↓
-PC 插入
+DWC3 怎么连接到 host
+
+dwc3_gadget_ep_enable()
     ↓
-DWC3 connect
+endpoint 怎么被 enable
+
+dwc3_gadget_ep_queue()
     ↓
-host reset
+usb_request 怎么提交给 DWC3
+
+dwc3_gadget_interrupt()
     ↓
-EP0 收到 SETUP
+DWC3 event 怎么被处理
+
+dwc3_endpoint_transfer_complete()
+    ↓
+传输完成后怎么回调上层
+```
+
+---
+
+# 3. 第三个看 `drivers/usb/dwc3/ep0.c`
+
+## 这个文件在做什么
+
+`ep0.c` 专门处理 **endpoint 0**。
+
+EP0 是 USB 枚举的核心。
+
+所有 USB device 枚举一开始都通过 EP0 进行，例如：
+
+```text
+GET_DESCRIPTOR
+SET_ADDRESS
+SET_CONFIGURATION
+GET_CONFIGURATION
+GET_STATUS
+SET_FEATURE
+CLEAR_FEATURE
+```
+
+所以：
+
+```text
+ep0.c = DWC3 device 模式枚举控制通道
+```
+
+---
+
+## 为什么不要一开始就看 `ep0.c`
+
+因为 `ep0.c` 依赖你先理解：
+
+```text
+DWC3 怎么注册 UDC
+DWC3 怎么处理 event
+DWC3 endpoint command 是什么
+DWC3 usb_request 是怎么提交的
+```
+
+这些主要在 `gadget.c` 里。
+
+所以顺序应该是：
+
+```text
+先 gadget.c 主框架
+再 ep0.c 枚举细节
+```
+
+---
+
+## 重点看什么函数
+
+```c
+dwc3_ep0_interrupt()
+dwc3_ep0_handle_setup()
+dwc3_ep0_delegate_req()
+dwc3_ep0_set_config()
+dwc3_ep0_set_address()
+dwc3_ep0_start_trans()
+dwc3_ep0_end_control_data()
+```
+
+---
+
+## 大致流程
+
+```text
+PC/Host 发 SETUP packet
+    ↓
+DWC3 硬件产生 EP0 event
+    ↓
+dwc3_gadget_interrupt()
+    ↓
+dwc3_process_event_entry()
+    ↓
+发现是 EP0 event
+    ↓
+dwc3_ep0_interrupt()
+    ↓
+dwc3_ep0_handle_setup()
+    ↓
+判断 setup request 类型
+    ↓
+标准请求自己处理一部分
+    ↓
+其他请求交给 gadget/composite/function
+```
+
+---
+
+## EP0 和 composite 的关系
+
+很多标准请求或 class/vendor 请求，不是 DWC3 自己最终处理，而是交给 gadget framework。
+
+关系大概是：
+
+```text
+DWC3 ep0.c
+    ↓
+gadget driver setup callback
+    ↓
+composite.c
+    ↓
+function driver
+```
+
+例如：
+
+```text
+Host 发 GET_DESCRIPTOR
+    ↓
+DWC3 ep0 收到 SETUP
+    ↓
+交给 composite.c
+    ↓
+composite 返回 device/config/interface/endpoint descriptor
+    ↓
+DWC3 ep0 把 descriptor 数据发回 host
+```
+
+---
+
+# 4. 同时配合看 `drivers/usb/dwc3/core.h`
+
+## 这个文件在做什么
+
+`core.h` 是 DWC3 内部核心数据结构和寄存器定义。
+
+你看 `gadget.c` 和 `ep0.c` 时会经常遇到：
+
+```c
+struct dwc3
+struct dwc3_ep
+struct dwc3_request
+struct dwc3_event_buffer
+struct dwc3_trb
+```
+
+这些结构体大多在 `core.h` 里。
+
+---
+
+## 重点结构体
+
+```c
+struct dwc3
+```
+
+表示整个 DWC3 控制器。
+
+里面有：
+
+```text
+寄存器基地址
+IRQ
+PHY
+event buffer
+gadget 对象
+endpoint 数组
+当前 speed
+当前 role/mode
+quirks
+```
+
+---
+
+```c
+struct dwc3_ep
+```
+
+表示一个 DWC3 endpoint。
+
+里面有：
+
+```text
+endpoint number
+endpoint name
+endpoint direction
+TRB ring
+request list
+endpoint flags
+resource index
+```
+
+---
+
+```c
+struct dwc3_request
+```
+
+表示 DWC3 内部封装后的 usb_request。
+
+关系是：
+
+```text
+struct usb_request
+    ↓
+struct dwc3_request
+    ↓
+TRB
+    ↓
+DWC3 hardware
+```
+
+---
+
+```c
+struct dwc3_trb
+```
+
+表示 DWC3 硬件传输描述符。
+
+DWC3 不是直接理解 `usb_request`，而是理解 TRB。
+
+---
+
+## 第一遍重点
+
+第一遍不用背寄存器宏。
+
+优先搞清楚这些结构关系：
+
+```text
+struct dwc3       = 一个 DWC3 控制器
+struct dwc3_ep    = 一个 endpoint
+struct usb_ep     = gadget 框架看到的 endpoint
+struct usb_request = gadget 框架提交的数据请求
+struct dwc3_request = DWC3 内部封装的 request
+struct dwc3_trb   = 硬件真正执行的传输描述符
+```
+
+---
+
+# 5. 再看 `drivers/usb/gadget/composite.c`
+
+## 这个文件在做什么
+
+`composite.c` 不属于 DWC3，但 device 学习必须看。
+
+它是 Linux USB gadget 的通用组合设备框架。
+
+它负责：
+
+```text
+把多个 USB function 组合成一个 USB device
+处理 descriptor
+处理 configuration
+处理 interface
+处理 SET_CONFIGURATION
+处理 function bind/enable/disable
+```
+
+例如一个设备可以同时有：
+
+```text
+ADB
+MTP
+RNDIS
+ACM
+HID
+Mass Storage
+```
+
+这些 function 最后通过 composite 框架组合成一个 USB 设备。
+
+---
+
+## DWC3 和 composite 的关系
+
+```text
+DWC3 gadget.c
+    ↓
+提供 UDC 硬件能力
+
+composite.c
+    ↓
+提供 USB device 逻辑和 descriptor
+
+function driver
+    ↓
+提供具体功能，比如 adb/rndis/mass_storage
+```
+
+DWC3 不关心自己是 ADB 还是 U 盘。
+
+DWC3 只负责：
+
+```text
+收 SETUP
+发 descriptor 数据
+enable endpoint
+queue request
+传输完成回调
+```
+
+具体 descriptor 和功能由 composite/function 提供。
+
+---
+
+# 6. 再看 `drivers/usb/gadget/configfs.c`
+
+## 这个文件在做什么
+
+`configfs.c` 负责通过 `/sys/kernel/config/usb_gadget/` 动态创建 USB gadget。
+
+也就是常见的这种操作：
+
+```bash
+mkdir /sys/kernel/config/usb_gadget/g1
+cd /sys/kernel/config/usb_gadget/g1
+
+echo 0x18d1 > idVendor
+echo 0x4ee7 > idProduct
+
+mkdir strings/0x409
+echo "0123456789" > strings/0x409/serialnumber
+echo "Vendor" > strings/0x409/manufacturer
+echo "Device" > strings/0x409/product
+
+mkdir configs/c.1
+mkdir functions/ffs.adb
+ln -s functions/ffs.adb configs/c.1/
+
+echo <udc_name> > UDC
+```
+
+最后这句：
+
+```bash
+echo <udc_name> > UDC
+```
+
+就是把 gadget 绑定到 DWC3 UDC 上。
+
+---
+
+## 这个文件和 DWC3 的关系
+
+```text
+configfs 创建 gadget
+    ↓
+composite 组织 descriptor/function
+    ↓
+echo UDC 触发 bind
+    ↓
+DWC3 gadget driver 开始工作
+```
+
+所以如果你调试 device 模式，经常要同时看：
+
+```text
+/sys/kernel/config/usb_gadget/
+和
+/sys/class/udc/
+```
+
+---
+
+# 7. 最后看 `drivers/usb/gadget/function/`
+
+## 这个目录在做什么
+
+这个目录下是各种 USB gadget function。
+
+例如：
+
+```text
+f_mass_storage.c   # U 盘
+f_acm.c            # 串口
+f_ecm.c            # USB 网卡 ECM
+f_rndis.c          # USB 网卡 RNDIS
+f_hid.c            # HID
+f_fs.c             # FunctionFS，ADB 常用
+f_uac1.c / f_uac2.c # USB Audio
+f_uvc.c            # USB Camera
+```
+
+这些 function 负责具体 USB 功能。
+
+DWC3 不知道自己传的是 ADB、RNDIS 还是 U 盘数据。
+DWC3 只知道 endpoint 上有 request 要传。
+
+---
+
+# 推荐第一轮阅读路线
+
+第一轮不要追求全部细节，看主线即可。
+
+```text
+drivers/usb/dwc3/core.c
+    ↓
+看 dwc3_probe()
+看 dwc3_core_init_mode()
+知道什么时候进 gadget
+
+drivers/usb/dwc3/gadget.c
+    ↓
+看 dwc3_gadget_init()
+看 dwc3_gadget_pullup()
+看 dwc3_gadget_ep_enable()
+看 dwc3_gadget_ep_queue()
+看 dwc3_gadget_interrupt()
+
+drivers/usb/dwc3/ep0.c
+    ↓
+看 dwc3_ep0_interrupt()
+看 dwc3_ep0_handle_setup()
+知道 SETUP 包怎么处理
+
+drivers/usb/gadget/composite.c
+    ↓
+看 setup callback
+看 descriptor 怎么返回
+看 SET_CONFIGURATION 怎么 enable function
+
+drivers/usb/gadget/configfs.c
+    ↓
+知道 echo UDC 后发生了什么
+```
+
+---
+
+# device 模式主线调用关系
+
+## 初始化阶段
+
+```text
+dwc3_probe()
+    ↓
+dwc3_core_init()
+    ↓
+dwc3_core_init_mode()
+    ↓
+dwc3_gadget_init()
+    ↓
+dwc3_gadget_init_endpoints()
+    ↓
+usb_add_gadget_udc()
+    ↓
+/sys/class/udc/ 出现 DWC3 UDC
+```
+
+---
+
+## gadget 绑定阶段
+
+```text
+用户创建 configfs gadget
+    ↓
+echo <udc_name> > UDC
+    ↓
+gadget bind 到 DWC3 UDC
+    ↓
+dwc3_gadget_start()
+    ↓
+等待 pullup/connect
+```
+
+---
+
+## 连接枚举阶段
+
+```text
+PC/Host 连接
+    ↓
+dwc3_gadget_pullup()
+    ↓
+dwc3_gadget_run_stop()
+    ↓
+DWC3 连接到 bus
+    ↓
+Host 发 USB reset
+    ↓
+DWC3 产生 reset event
+    ↓
+Host 发 SETUP packet
+    ↓
+dwc3_ep0_interrupt()
+    ↓
+dwc3_ep0_handle_setup()
     ↓
 composite 返回 descriptor
     ↓
@@ -388,438 +811,95 @@ SET_ADDRESS
     ↓
 SET_CONFIGURATION
     ↓
-bulk/interrupt/iso endpoint enable
+function enable
     ↓
-usb_request queue
-    ↓
-DWC3 TRB
-    ↓
-endpoint event
-    ↓
-request complete
+非 EP0 endpoint enable
 ```
-
-核心概念：
-
-- UDC
-- gadget driver
-- function driver
-- configfs
-- composite framework
-- EP0
-- setup packet
-- usb_request
-- endpoint
-- TRB
-- event buffer
-- pullup
-- connect/disconnect
 
 ---
 
-## 9. 第五阶段：Host/xHCI 路径
-
-DWC3 在 host 模式下通常交给 xHCI 处理传输。
-
-关系：
+## 数据传输阶段
 
 ```text
-DWC3 host.c
+function driver
     ↓
-创建/注册 xHCI platform device
+usb_ep_queue()
     ↓
-xhci-plat.c
+dwc3_gadget_ep_queue()
     ↓
-xhci.c / xhci-ring.c / xhci-mem.c
+dwc3_prepare_trbs()
+    ↓
+dwc3_send_gadget_ep_cmd()
+    ↓
+DWC3 硬件传输
+    ↓
+DWC3 event
+    ↓
+dwc3_endpoint_interrupt()
+    ↓
+dwc3_endpoint_transfer_complete()
+    ↓
+usb_request complete callback
+    ↓
+function driver 收到完成通知
 ```
 
-学习顺序：
+---
 
-```text
-DWC3 host init
-    ↓
-xHCI platform probe
-    ↓
-HCD 注册
-    ↓
-root hub 注册
-    ↓
-port connect
-    ↓
-USB core 枚举
-    ↓
-class driver bind
-    ↓
-URB 传输
-```
+# 最建议你先啃的 3 个函数
 
-重点文件：
+如果你刚开始，不要同时看太多。
 
-```text
-drivers/usb/dwc3/host.c
-drivers/usb/host/xhci-plat.c
-drivers/usb/host/xhci.c
-drivers/usb/host/xhci-ring.c
-drivers/usb/host/xhci-mem.c
-drivers/usb/core/hub.c
-drivers/usb/core/message.c
-drivers/usb/core/driver.c
-```
-
-重点函数：
+先看这三个：
 
 ```c
-dwc3_host_init()
-xhci_plat_probe()
-xhci_gen_setup()
-xhci_run()
-usb_add_hcd()
-hub_event()
-usb_new_device()
-usb_get_device_descriptor()
-usb_set_configuration()
-usb_probe_interface()
-usb_submit_urb()
-xhci_urb_enqueue()
+dwc3_probe()
+dwc3_gadget_init()
+dwc3_gadget_ep_queue()
 ```
 
-关键调用链：
+它们分别代表：
 
 ```text
-DWC3 切到 host
-    ↓
-dwc3_host_init()
-    ↓
-创建 xHCI platform device
-    ↓
-xhci_plat_probe()
-    ↓
-usb_add_hcd()
-    ↓
-root hub 出现
-    ↓
-hub_event()
-    ↓
-检测 port connect
-    ↓
-port reset
-    ↓
-usb_new_device()
-    ↓
-GET_DESCRIPTOR
-    ↓
-SET_ADDRESS
-    ↓
-SET_CONFIGURATION
-    ↓
-usb_probe_interface()
-    ↓
-class driver bind
-    ↓
-usb_submit_urb()
-    ↓
-xhci_urb_enqueue()
-    ↓
-queue TRB
-    ↓
-ring doorbell
-    ↓
-event ring
-    ↓
-urb complete
+DWC3 控制器怎么起来
+DWC3 怎么注册成 UDC
+USB request 怎么真正交给硬件传输
 ```
 
-核心概念：
+然后再看：
 
-- HCD
-- root hub
-- hub driver
-- port status
-- USB device
-- USB interface
-- USB class driver
-- URB
-- endpoint
-- xHCI command ring
-- xHCI transfer ring
-- xHCI event ring
-- doorbell
-- TRB
+```c
+dwc3_ep0_handle_setup()
+dwc3_endpoint_transfer_complete()
+```
 
----
-
-## 10. 第六阶段：USB3.0 / Type-C / PHY
-
-USB3.0 在 USB2 基础上增加了链路层和 PHY 复杂度。
-
-重点概念：
-
-- SuperSpeed
-- USB3 PHY
-- PIPE
-- LFPS
-- link training
-- U0 / U1 / U2 / U3
-- SuperSpeed descriptor
-- endpoint companion descriptor
-- LPM
-- equalization
-- de-emphasis
-- lane polarity
-- lane swap
-
-常见问题：
-
-- 只能识别成 high-speed，不能 super-speed
-- USB3 插入无反应，但 USB2 正常
-- Type-C 一个方向正常，另一个方向不正常
-- SuperSpeed link training 失败
-- suspend/resume 后 SS 不恢复
-- USB3 速率不稳定
-
-常见原因：
-
-- USB3 PHY 没 ready
-- PIPE clock 问题
-- Type-C orientation mux 问题
-- lane swap / polarity 问题
-- PHY tuning 问题
-- maximum-speed 配置错误
-- GUSB3PIPECTL 配置问题
-- 电源/时钟/复位时序问题
-- 板级 SI 问题
-
-Type-C/role switch 路径：
+它们分别代表：
 
 ```text
-Type-C controller / TCPC / PD
-    ↓
-role/orientation/vbus event
-    ↓
-usb_role_switch_set_role()
-    ↓
-DWC3 DRD role switch
-    ↓
-dwc3_set_mode()
-    ↓
-host/gadget start/stop
+枚举请求怎么处理
+传输完成怎么回调上层
 ```
 
 ---
 
-## 11. 第七阶段：PM / wakeup / suspend/resume
+# 一句话总结
 
-USB 量产项目中，PM 问题很常见。
-
-常见场景：
-
-- runtime suspend 后插拔不识别
-- system suspend 后无法唤醒
-- resume 后 USB2/USB3 不恢复
-- device 模式 remote wakeup 不工作
-- host 模式外设唤醒不工作
-- Type-C attach wake 不工作
-
-涉及层次：
-
-- DWC3 core PM
-- SoC glue PM
-- PHY PM
-- Type-C/PD PM
-- power domain
-- clock gating
-- reset state
-- wakeup IRQ
-- runtime PM
-- system suspend/resume
-
-学习重点：
-
-- runtime_suspend / runtime_resume
-- suspend / resume
-- `wakeup-source`
-- `device_may_wakeup()`
-- `enable_irq_wake()`
-- PHY power_on / power_off
-- clock disable / enable 顺序
-- power domain 关断条件
-- role 切换时 PM 状态
-
----
-
-## 12. 问题定位思路
-
-### 12.1 Probe 阶段问题
-
-现象：
-
-- dmesg 没有 dwc3
-- 没有 xhci
-- 没有 UDC
-- probe defer
-
-优先查：
-
-- DTS compatible
-- reg / interrupts
-- clock
-- reset
-- power-domain
-- regulator
-- PHY
-- driver bind
-- EPROBE_DEFER
-
-常用命令：
-
-```bash
-dmesg | grep -iE "dwc3|xhci|usb|phy|typec|udc"
-ls /sys/kernel/debug/devices_deferred
-ls /sys/class/udc/
-```
-
----
-
-### 12.2 Host 模式不识别外设
-
-先查：
-
-- xHCI 有没有注册？
-- root hub 有没有？
-- VBUS 有没有 5V？
-- PHY 有没有 connect event？
-- Type-C role 是否 host？
-- hub.c 有没有枚举日志？
-- 设备类驱动有没有 bind？
-
-常用命令：
-
-```bash
-dmesg -w
-dmesg | grep -iE "xhci|usb|hub|new high-speed|new SuperSpeed"
-lsusb
-lsusb -t
-cat /sys/kernel/debug/usb/devices
-```
-
-判断：
+开始学 DWC3 device，文件顺序建议是：
 
 ```text
-连 root hub 都没有：
-    多半是 DWC3 host/xHCI 没起，或 clock/reset/irq/resource 问题。
-
-root hub 有，但插设备没反应：
-    多半是 VBUS/PHY/Type-C role/port connect detect 问题。
-
-能枚举但设备功能异常：
-    再看 USB core/class driver/xHCI transfer。
+core.c      看 DWC3 怎么初始化、怎么进入 device 模式
+gadget.c    看 DWC3 作为 UDC 怎么工作，这是 device 主文件
+ep0.c       看 USB 枚举和控制传输
+core.h      看 DWC3 内部结构体和 TRB/event 定义
+composite.c 看 descriptor/function/configuration 怎么组织
+configfs.c  看用户如何创建并绑定 gadget
+function/   看具体 ADB/U盘/RNDIS/HID 等功能
 ```
 
----
-
-### 12.3 Device/Gadget 模式 PC 不识别
-
-先查：
-
-- UDC 有没有注册？
-- gadget function 有没有 bind 到 UDC？
-- role 是否 peripheral？
-- VBUS 是否 valid？
-- DWC3 是否执行 pullup/connect？
-- PC host 有没有 reset？
-- EP0 setup 包有没有收到？
-
-常用命令：
-
-```bash
-ls /sys/class/udc/
-ls /sys/kernel/config/usb_gadget/
-dmesg | grep -iE "dwc3|gadget|udc|ep0|configfs"
-```
-
-判断：
+其中最核心的是：
 
 ```text
-/sys/class/udc/ 没有：
-    多半是 DWC3 gadget 没初始化，或者 dr_mode/DTS/PHY/clock/reset 问题。
-
-UDC 有，但 PC 不识别：
-    多半查 gadget 是否 bind、VBUS/role、USB2 pullup、Type-C device role、PHY。
-
-PC 发了 setup 但枚举失败：
-    再看 ep0.c、composite.c、function descriptor。
+drivers/usb/dwc3/gadget.c
 ```
 
----
-
-## 13. 修改代码的原则
-
-优先修改：
-
-- DTS
-- binding
-- SoC glue driver
-- PHY driver
-- Type-C / role switch 相关
-- regulator / clock / reset / power domain
-- SoC wrapper register
-- quirk
-
-尽量不要一开始就改：
-
-- `drivers/usb/dwc3/core.c`
-- `drivers/usb/dwc3/gadget.c`
-- `drivers/usb/dwc3/ep0.c`
-- `drivers/usb/host/xhci.c`
-- `drivers/usb/core/`
-- `drivers/usb/gadget/`
-
-原则：
-
-```text
-能通过 glue、DTS、PHY、quirk 解决的，不要改通用传输层。
-```
-
-只有明确属于以下情况才考虑改通用层：
-
-- DWC3 IP version errata
-- 现有 quirk 不覆盖本 SoC
-- 上游已有类似 patch，可以复用或扩展
-- 明确是 DWC3 core 逻辑和硬件行为不匹配
-- DMA coherency / cache / IOMMU 特殊问题
-- runtime PM / role switch 通用流程 bug
-- xHCI controller 需要新增 quirk
-
----
-
-## 14. 最终主线
-
-完整学习主线：
-
-```text
-SoC 集成层
-    ↓
-DWC3 core 初始化
-    ↓
-USB2 枚举
-    ↓
-device/gadget EP0
-    ↓
-host/xHCI root hub 和枚举
-    ↓
-DWC3 gadget TRB/event
-    ↓
-xHCI URB/TRB/event ring
-    ↓
-USB3 PHY/link/Type-C
-    ↓
-PM/wakeup/suspend/resume
-```
-
-最终目标：
-
-- 知道各层边界
-- 能完成 SoC 适配
-- 能判断问题属于 glue、PHY、role、DWC3 core、gadget EP0、xHCI 还是 USB core
-- 能在必要时添加合适的 quirk/workaround
-- 避免无意义地修改通用层
+它就是 DWC3 device/UDC 的主战场。
