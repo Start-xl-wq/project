@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/IP厂家.md",
+                "file": "USB/USB DWC3 学习路线笔记.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "IP厂家"
+              "title": "USB DWC3 学习路线笔记"
             }
           }
         ]
@@ -184,8 +184,9 @@
   },
   "active": "85d6534de8323b9d",
   "lastOpenFiles": [
-    "README.md",
     "USB/IP厂家.md",
+    "USB/USB DWC3 学习路线笔记.md",
+    "README.md",
     "USB/3.0",
     "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
     "未命名.md",
@@ -228,7 +229,6 @@
     "PCIe/事务层/PCIe 基础之事务层 TLP 格式.md",
     "PCIe/链路层/PCIe 基础之链路层 流控.md",
     "PCIe/链路层/PCIe 基础之链路层 DLLP.md",
-    "PCIe/链路层/PCIe 基础之链路层 基础概念.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (五)：PCIe ASPM电源管理.md"
+    "PCIe/链路层/PCIe 基础之链路层 基础概念.md"
   ]
 }
