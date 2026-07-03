@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/USB Device 驱动侧工作范围汇报.md",
+                "file": "USB/Ax525 USB 相机需求.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "USB Device 驱动侧工作范围汇报"
+              "title": "Ax525 USB 相机需求"
             }
           }
         ]
@@ -194,7 +194,7 @@
     "USB/Ax525调试记录/acm",
     "USB/Ax525调试记录",
     "USB/DWC3",
-    "USB/USB Device 驱动侧工作范围汇报.md",
+    "USB/Ax525 USB 相机需求.md",
     "USB/3.0",
     "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
     "未命名.md",
