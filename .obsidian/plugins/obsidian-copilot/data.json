@@ -80,7 +80,7 @@
     {
       "name": "gpt-5.5",
       "provider": "openai",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "core": true,
       "capabilities": [
@@ -91,7 +91,7 @@
     {
       "name": "gpt-5.4-mini",
       "provider": "openai",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "core": true,
       "capabilities": [
@@ -102,7 +102,7 @@
     {
       "name": "google/gemini-3.5-flash",
       "provider": "openrouterai",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
@@ -114,7 +114,7 @@
     {
       "name": "claude-sonnet-4-6",
       "provider": "anthropic",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "capabilities": [
         "reasoning",
@@ -125,7 +125,7 @@
     {
       "name": "gemini-3.5-flash",
       "provider": "google",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
@@ -137,7 +137,7 @@
     {
       "name": "gemini-3.1-flash-lite",
       "provider": "google",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
@@ -148,7 +148,7 @@
     {
       "name": "gemini-2.5-flash",
       "provider": "google",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
@@ -316,7 +316,7 @@
       "name": "deepseek-ai/DeepSeek-V3",
       "provider": "siliconflow",
       "enabled": false,
-      "isBuiltIn": false,
+      "isBuiltIn": true,
       "baseUrl": "https://api.siliconflow.com/v1",
       "apiKey": ""
     },
@@ -324,7 +324,7 @@
       "name": "deepseek-ai/DeepSeek-R1",
       "provider": "siliconflow",
       "enabled": false,
-      "isBuiltIn": false,
+      "isBuiltIn": true,
       "baseUrl": "https://api.siliconflow.com/v1",
       "capabilities": [
         "reasoning"
@@ -336,7 +336,7 @@
       "provider": "3rd party (openai-format)",
       "enabled": true,
       "isBuiltIn": false,
-      "baseUrl": "https://apirouter.axera-tech.com/v1",
+      "baseUrl": "https://apirouter.axera-tech.com/",
       "apiKey": "",
       "isEmbeddingModel": false,
       "capabilities": [],
