@@ -162,13 +162,23 @@
               "icon": "lucide-list",
               "title": "大纲"
             }
+          },
+          {
+            "id": "c024a5ad2b847381",
+            "type": "leaf",
+            "state": {
+              "type": "copilot-chat-view",
+              "state": {},
+              "icon": "message-square",
+              "title": "Copilot"
+            }
           }
-        ]
+        ],
+        "currentTab": 5
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -179,11 +189,29 @@
       "templates:插入模板": false,
       "command-palette:打开命令面板": false,
       "bases:新建数据库": false,
-      "obsidian-git:Open Git source control": false
+      "obsidian-git:Open Git source control": false,
+      "copilot:Open Copilot Chat": false
     }
   },
-  "active": "1e0e3e5c3c275b3a",
+  "active": "c024a5ad2b847381",
   "lastOpenFiles": [
+    "copilot/copilot-custom-prompts/Clip Web Page.md",
+    "copilot/copilot-custom-prompts/Clip YouTube Transcript.md",
+    "copilot/copilot-custom-prompts/Rewrite as tweet thread.md",
+    "copilot/copilot-custom-prompts/Rewrite as tweet.md",
+    "copilot/copilot-custom-prompts/Remove URLs.md",
+    "copilot/copilot-custom-prompts/Generate glossary.md",
+    "copilot/copilot-custom-prompts/Generate table of contents.md",
+    "copilot/copilot-custom-prompts/Make longer.md",
+    "copilot/copilot-custom-prompts/Make shorter.md",
+    "copilot/copilot-custom-prompts/Emojify.md",
+    "copilot/copilot-custom-prompts/Explain like I am 5.md",
+    "copilot/copilot-custom-prompts/Simplify.md",
+    "copilot/copilot-custom-prompts/Summarize.md",
+    "copilot/copilot-custom-prompts/Translate to Chinese.md",
+    "copilot/copilot-custom-prompts/Fix grammar and spelling.md",
+    "copilot/copilot-custom-prompts",
+    "copilot",
     "USB/DWC3/DWC3 `core.c` 学习笔记.md",
     "USB/Ax525 USB 相机需求.md",
     "USB/DWC3/USB DWC3 学习路线笔记.md",
@@ -202,33 +230,16 @@
     "题目解析1.md",
     "Pasted image 20260521104655.png",
     "USB/2.0/USB驱动开发笔记（二）：枚举 (Enumeration) 与描述符 (Descriptor) 体系.md",
-    "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
     "Pasted image 20260521104619.png",
     "MMC/SPEC/sdips_gravityxr_sdio_emmc_host_iip_databook.pdf",
     "USB/3.0",
-    "USB/2.0",
-    "USB",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (八)：PCIe地址翻译 MMU  IOMMU iATU.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (七)：PCIe BAR与DMA的底层流转.md",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (六)：PCIe AER错误机制.md",
     "Pasted image 20260509171817.png",
     "Pasted image 20260509171620.png",
-    "录像场景测试与调试指南.md",
     "Pasted image 20260509171933.png",
     "Pasted image 20260509171904.png",
     "Pasted image 20260509171930.png",
     "Pasted image 20260509171847.png",
     "Pasted image 20260509171803.png",
-    "Pasted image 20260509171726.png",
-    "PCIe/实战进阶/芯片 Bring-up 实战笔记 (三)：PCIe I_O 事件通知机制.md",
-    "PCIe/DataPass/PCIe 基础之Datapass 带宽建模.md",
-    "PCIe/物理层/PCIe 基础之物理层-信号.md",
-    "PCIe/物理层/PCIe 基础之物理层-链路建立和训练 LTSSM.md",
-    "PCIe/事务层/PCIe 基础之事务层-枚举.md",
-    "PCIe/事务层/PCIe 基础之事务层 TLP 性能.md",
-    "PCIe/事务层/PCIe 基础之事务层 TLP 机制.md",
-    "PCIe/事务层/PCIe 基础之事务层 TLP 格式.md"
+    "Pasted image 20260509171726.png"
   ]
 }
