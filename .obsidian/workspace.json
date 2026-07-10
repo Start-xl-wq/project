@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/DWC3/USB DWC3 学习路线笔记.md",
+                "file": "USB/Ax525 USB 相机需求.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "USB DWC3 学习路线笔记"
+              "title": "Ax525 USB 相机需求"
             }
           }
         ]
@@ -195,6 +195,9 @@
   },
   "active": "c024a5ad2b847381",
   "lastOpenFiles": [
+    "copilot/copilot-conversations/优化一下文档@20260710_111544.md",
+    "copilot/copilot-conversations",
+    "USB/DWC3/USB DWC3 学习路线笔记.md",
     "copilot/copilot-custom-prompts/Clip Web Page.md",
     "copilot/copilot-custom-prompts/Clip YouTube Transcript.md",
     "copilot/copilot-custom-prompts/Rewrite as tweet thread.md",
@@ -214,7 +217,6 @@
     "copilot",
     "USB/DWC3/DWC3 `core.c` 学习笔记.md",
     "USB/Ax525 USB 相机需求.md",
-    "USB/DWC3/USB DWC3 学习路线笔记.md",
     "USB/Class/虚拟串口 ACM.md",
     "USB/验证/Ax615.md",
     "README.md",
@@ -229,10 +231,8 @@
     "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
     "题目解析1.md",
     "Pasted image 20260521104655.png",
-    "USB/2.0/USB驱动开发笔记（二）：枚举 (Enumeration) 与描述符 (Descriptor) 体系.md",
     "Pasted image 20260521104619.png",
     "MMC/SPEC/sdips_gravityxr_sdio_emmc_host_iip_databook.pdf",
-    "USB/3.0",
     "Pasted image 20260509171817.png",
     "Pasted image 20260509171620.png",
     "Pasted image 20260509171933.png",
