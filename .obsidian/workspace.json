@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/Ax525 USB 相机需求.md",
+                "file": "USB/SoC USB Host Device 休眠唤醒闭环设计.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Ax525 USB 相机需求"
+              "title": "SoC USB Host Device 休眠唤醒闭环设计"
             }
           }
         ]
@@ -193,7 +193,7 @@
       "copilot:Open Copilot Chat": false
     }
   },
-  "active": "c024a5ad2b847381",
+  "active": "85d6534de8323b9d",
   "lastOpenFiles": [
     "copilot/copilot-conversations/优化一下文档@20260710_111544.md",
     "copilot/copilot-conversations",
@@ -216,7 +216,7 @@
     "copilot/copilot-custom-prompts",
     "copilot",
     "USB/DWC3/DWC3 `core.c` 学习笔记.md",
-    "USB/Ax525 USB 相机需求.md",
+    "USB/SoC USB Host Device 休眠唤醒闭环设计.md",
     "USB/Class/虚拟串口 ACM.md",
     "USB/验证/Ax615.md",
     "README.md",
