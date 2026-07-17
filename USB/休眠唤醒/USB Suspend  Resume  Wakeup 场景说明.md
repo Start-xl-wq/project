@@ -1,5 +1,3 @@
-# USB Suspend / Resume / Wakeup 场景说明
-
 ## 1. 术语定义
 
 ### 1.1 Runtime Suspend

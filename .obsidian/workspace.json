@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/SoC USB Host Device 休眠唤醒闭环设计.md",
+                "file": "USB/基本概念/micro-USB OTG ID 脚与 Host  Device 角色说明.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "SoC USB Host Device 休眠唤醒闭环设计"
+              "title": "micro-USB OTG ID 脚与 Host  Device 角色说明"
             }
           }
         ]
@@ -195,6 +195,10 @@
   },
   "active": "85d6534de8323b9d",
   "lastOpenFiles": [
+    "USB/休眠唤醒/USB Suspend  Resume  Wakeup 场景说明.md",
+    "USB/基本概念/micro-USB OTG ID 脚与 Host  Device 角色说明.md",
+    "USB/基本概念",
+    "USB/休眠唤醒",
     "copilot/copilot-conversations/优化一下文档@20260710_111544.md",
     "copilot/copilot-conversations",
     "USB/DWC3/USB DWC3 学习路线笔记.md",
@@ -216,7 +220,6 @@
     "copilot/copilot-custom-prompts",
     "copilot",
     "USB/DWC3/DWC3 `core.c` 学习笔记.md",
-    "USB/SoC USB Host Device 休眠唤醒闭环设计.md",
     "USB/Class/虚拟串口 ACM.md",
     "USB/验证/Ax615.md",
     "README.md",
@@ -225,14 +228,11 @@
     "USB/Ax525调试记录/acm",
     "USB/Ax525调试记录",
     "USB/DWC3",
-    "USB/3.0",
     "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
     "未命名.md",
     "PCIe/DataPass/PCIe 基础之DataPass 数据交互.md",
-    "题目解析1.md",
     "Pasted image 20260521104655.png",
     "Pasted image 20260521104619.png",
-    "MMC/SPEC/sdips_gravityxr_sdio_emmc_host_iip_databook.pdf",
     "Pasted image 20260509171817.png",
     "Pasted image 20260509171620.png",
     "Pasted image 20260509171933.png",
