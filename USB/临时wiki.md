@@ -1,674 +1,178 @@
-# AX8860 / AX525 新人指引：代码拉取、编译及 HAPS 烧录
-
-## 1. 文档说明
-
-本文用于指导新人完成 AX8860、AX525 项目的以下操作：
-
-1. 在线查看项目代码
-2. 拉取代码
-3. 编译 Kernel 和 Boot Wrapper
-4. 准备并映射烧录产物
-5. 预约 HAPS 调试环境
-6. 下载 Bitfile
-7. 使用 Trace32 加载内核并进行调试
-
-作为**外设驱动组**，重点关注以下目录：
-
-```text
-kernel/linux
-build
-```
+明白，两点改动：硬件已确认支持 USB3.0 SuperSpeed（不再是待验证的风险），里程碑保留到 4。相应地，带宽可行性里"前提1"从"一票否决的待验证项"改为"已满足"，风险表也调整。重出完整版：
 
 ---
 
-## 2. 在线查看代码
+# 算力棒 USB 驱动设计方案
 
-各项目代码可通过以下地址在线查看：
+## 1. 背景与目标
 
-```text
-http://10.126.12.106:8080/source/xref/
+我们要做一款 USB 算力棒，通过 USB3.0 接口与主机交换数据。核心指标：
+
+| 项目 | 指标 |
+|------|------|
+| 接口 | USB3.0 (SuperSpeed)，硬件已确认支持 |
+| 理论带宽 | 5 Gbps |
+| 目标有效带宽 | ≥ 350 MB/s（扣除协议损耗后的初期目标）|
+| 传输模型 | device ↔ host 大块数据高吞吐 |
+
+算力棒工作在 USB **device（gadget）** 模式，主机侧为 **host** 模式。初期主机采用 Linux SoC。
+
+## 2. 技术选型与理由
+
+### 2.1 传输类型：选 BULK
+
+USB 有 control / interrupt / bulk / isochronous 四种传输类型。算力棒的特征是**大块数据、要求可靠、追求吞吐**，唯一正解是 BULK。USB3.0 的 BULK 还支持 burst 机制进一步拉满带宽。
+
+### 2.2 Device 端：选 f_fs（FunctionFS）+ 用户态应用
+
+USB gadget 有多种 function 实现方式。我们不选 f_acm 等内核内置 function，也不自研内核 function，而是选 **f_fs**：
+
+- **f_fs 的数据模型天生适配高吞吐**：endpoint 就是普通文件描述符，支持标准 read/write，更支持 AIO（异步批量提交）。高带宽的关键是"多个大块传输同时在飞"，AIO 天然适配。
+- **业务逻辑在用户态，迭代方便**：数据搬运层由 f_fs 内核部分实现，业务由用户态应用实现，两者解耦。改动和调试不需要动内核，配合灵活。
+- **不用重写内核 function，规避踩坑**：自研 function 工作量大、风险高。f_fs 是成熟的通用数据层。
+
+一句话：**f_fs 不是妥协，它的数据模型（文件 fd + AIO + 自定义 BULK 端点）本身就是为这种场景准备的。**
+
+### 2.3 Host 端：选 libusb + 用户态程序，不写内核驱动
+
+这里是一个容易误解的点，需要说清楚：
+
+- **枚举不需要专属驱动**。设备插上后，host 端内核自带的 USB core 会自动完成枚举（读描述符、分配地址等）。只要 device 端描述符写对，就能枚举成 SuperSpeed，与 host 端有没有驱动无关。
+- **找不到匹配驱动，设备不会枚举失败，只是没被"认领"**。我们正好利用这一点：不写内核驱动，用用户态 libusb 直接操作 BULK 端点收发数据。
+- **与 device 端架构对称**：两端都是"用户态程序 + 内核自带通路，零自研内核模块"。
+
+host 端只有在需要把设备伪装成标准类设备（网卡/块设备）、或对延迟有极端要求时才需要写内核驱动，本项目初期都不涉及。
+
+## 3. 带宽可行性分析
+
+以下为基于 USB3.0 协议特性的理论估算，**实测数字需在里程碑 3/4 确认**，但估算足以判断路线可行性。
+
+### 3.1 5Gbps 逐层损耗
+
 ```
+线速率           5 Gbps      ← USB3.0 SuperSpeed 标称
+  │
+  │ 扣 8b/10b 编码开销(物理层每 10bit 只有 8bit 是数据, 固定损耗 20%)
+  ▼
+有效数据率       4 Gbps = 500 MB/s   ← 理论天花板
+  │
+  │ 扣协议开销(包头/ACK/链路层轮询/流控等, BULK 大块传输约 10~20%)
+  ▼
+BULK 实际上限    约 400~450 MB/s     ← 理想调优后能摸到的上限
+  │
+  │ 扣用户态通路开销(f_fs / usbfs / libusb 的调度与拷贝)
+  ▼
+现实可达         约 350~420 MB/s     ← 取决于 AIO 调优做得好不好
+```
+
+**结论：350 MB/s ≈ 理论天花板 500MB/s 的 70%。这在 USB3.0 BULK + 用户态方案下是合理、可达的目标，不激进。**
+
+### 3.2 达成的前提
+
+架构本身不是瓶颈，两个前提：
+
+```
+前提1(硬件): 已满足 ✓
+  硬件已确认支持 USB3.0 SuperSpeed, 天花板 500MB/s 到位。
+  剩下只需在枚举阶段确认实际协商到 SS(里程碑2), 不再有硬件风险。
+
+前提2(软件调优): 决定摸到天花板的哪个位置
+  必须用 AIO 批量提交 + 多缓冲, 让传输持续在飞
+  → 朴素同步 write/read: 每次传完有空窗, 实测常掉到 100~200MB/s
+  → AIO + 合适块大小(256K~1M) + 队列深度: 才能逼近 400MB/s
+  → host 端 libusb 同样要用异步, 否则接收侧成瓶颈
+```
+
+### 3.3 可行性结论
+
+```
+硬件天花板已到位(SuperSpeed 已确认), 350MB/s 目标在架构上确定可行。
+唯一变量是软件调优做得多满:
+  - 用满 AIO/异步 → 稳达 350MB/s 并留有余量
+  - 冲 400MB/s 附近 → 需在块大小/队列深度上精细打磨
+本方案完全覆盖 350MB/s 初期目标。
+```
+
+### 3.4 更高带宽的边界（备询）
+
+```
+若后续目标提到 400MB/s 以上、接近天花板:
+  - USB3.0 单口物理天花板 ~500MB/s, 提升空间有限
+  - 更高带宽需 USB3.1/3.2(10/20Gbps) 或多通道 → 属硬件规格升级
+初期 350MB/s 目标, 本方案完全覆盖并留有余量。
+```
+
+## 4. 系统架构
+
+### 4.1 端到端数据链路
+
+```
+         device 端(算力棒)                    host 端(Linux SoC)
+    ┌──────────────────────┐            ┌──────────────────────┐
+    │ f_fs 应用程序(用户态) │            │ libusb 程序(用户态)   │
+    │  write/read endpoint │            │  libusb_bulk_transfer │
+    └──────────┬───────────┘            └───────────┬──────────┘
+               │                                    │
+         f_fs (内核)                          usbfs (内核, 自带)
+               │                                    │
+          udc 驱动                            xhci host 驱动(自带)
+               │                                    │
+    ═══════════╧════════════ USB3.0 物理线 ═════════╧═══════════
+
+     两端均为: 用户态程序 + 内核自带通路, 零自研内核模块
+```
+
+### 4.2 各层职责
+
+| 层 | Device 端 | Host 端 |
+|----|-----------|---------|
+| 用户态程序（自研） | f_fs 应用，收发端点数据 | libusb 程序，收发 BULK 数据 |
+| 内核数据层（现成） | f_fs | usbfs |
+| 控制器驱动（现成） | udc | xhci |
+
+**我们要开发的只有两端最外层的用户态程序，中间通路全部使用内核现成能力。**
+
+## 5. 实施计划（里程碑）
+
+```
+里程碑0(环境确认) ─ 确认 UDC 名字与 f_fs 可用
+      │
+      ▼
+里程碑1(configfs) ──┐
+      │            ├─ 耦合调试, 目标: 枚举成 SuperSpeed
+里程碑2(描述符/枚举)─┘
+      │
+      ▼
+里程碑3(裸带宽跑通) ─ 打通闭环 (device 侧 + host libusb 侧同步做)
+      │
+      ▼
+里程碑4(带宽优化) ─── 最耗时, 冲 350MB/s, 决定成败
+```
+
+| 里程碑 | 目标 | 完成标志 |
+|--------|------|----------|
+| 0 环境确认 | 确认 UDC 名字、支持 f_fs（硬件已知支持 SS） | UDC 名字确定，`maximum_speed` 为 super-speed |
+| 1 configfs | 用 configfs 拼出带 f_fs 的 gadget | `/dev/functionfs/` 下出现 ep0 |
+| 2 描述符/枚举 | 应用写描述符，激活 UDC，成功枚举成 SS | host `lsusb -t` 看到设备且速率 5000M |
+| 3 裸带宽跑通 | device 发假数据，host libusb 收，打通链路 | host 稳定收到数据，测出初始带宽 |
+| 4 带宽优化 | 用 AIO + 多缓冲冲目标带宽 | 稳定 ≥ 350 MB/s，持续无掉速/丢数据 |
+
+## 6. 风险与应对
+
+| 风险 | 说明 | 应对 |
+|------|------|------|
+| **枚举降速** | 描述符（尤其 SS Companion 的 `bMaxBurst`）配置错误，可能协商不到 SS 而降到 HS | 里程碑2 重点确认 `lsusb -t` 速率为 5000M，三套描述符（FS/HS/SS）严格对齐 |
+| **带宽上不去** | 同步 write 有空窗期，吃不满带宽 | 里程碑4 换 AIO 批量提交，通常一步到位；调块大小/队列深度 |
+| **接口映射不一致** | device 声明的 interface/端点号与 host libusb claim 的对不上 | 两端约定固定映射（如 interface 0，ep 0x81 IN / 0x01 OUT）|
+
+（硬件 SuperSpeed 支持已确认，原"硬件天花板"一票否决风险已消除。）
+
+## 7. 关键结论
+
+1. **架构对称、自研量小**：两端都是用户态程序 + 内核自带通路，无需自研内核模块，开发和迭代成本可控。
+2. **带宽目标确定可行**：硬件 SuperSpeed 已确认，350MB/s ≈ 理论天花板的 70%，唯一变量是软件调优，用满 AIO 即可稳达并留余量。
+3. **风险集中在两处**：描述符配置（避免枚举降速）和带宽调优（AIO），其余环节为成熟通路。
 
 ---
 
-## 3. 拉取代码
-
-> 建议 AX8860 和 AX525 分别创建独立的代码目录，避免不同项目代码相互影响。
-
-### 3.1 拉取 AX525 代码
-
-```bash
-mkdir -p ~/ax525
-cd ~/ax525
-
-repo init \
-    -u git@git-ext.axera-tech.com:megsoc-bsp/manifest.git \
-    -b ax525_trunk \
-    --no-clone-bundle
-
-repo sync -c --no-tags
-repo forall -c git lfs pull
-repo start ax525_trunk --all
-```
-
-也可以合并执行：
-
-```bash
-repo init -u git@git-ext.axera-tech.com:megsoc-bsp/manifest.git -b ax525_trunk --no-clone-bundle
-repo sync -c --no-tags && repo forall -c git lfs pull && repo start ax525_trunk --all
-```
-
-### 3.2 拉取 AX8860 代码
-
-```bash
-mkdir -p ~/ax8860
-cd ~/ax8860
-
-repo init \
-    -u git@git-ext.axera-tech.com:megsoc-bsp/manifest.git \
-    -b ax8860_trunk \
-    --no-clone-bundle
-
-repo sync -c --no-tags
-repo forall -c git lfs pull
-repo start ax8860_trunk --all
-```
-
-也可以合并执行：
-
-```bash
-repo init -u git@git-ext.axera-tech.com:megsoc-bsp/manifest.git -b ax8860_trunk --no-clone-bundle
-repo sync -c --no-tags && repo forall -c git lfs pull && repo start ax8860_trunk --all
-```
-
-### 3.3 重点目录
-
-代码拉取完成后，外设驱动开发主要关注：
-
-```text
-<代码根目录>/kernel/linux
-<代码根目录>/build
-```
-
----
-
-## 4. 编译
-
-### 4.1 查看支持的编译项目
-
-进入 Kernel 目录：
-
-```bash
-cd <代码根目录>/kernel/linux
-```
-
-执行：
-
-```bash
-make plist
-```
-
-该命令会列出当前代码支持的编译项目，即可用的 `p=` 参数。
-
-常见示例：
-
-```text
-AX8860_haps
-AX525_emmc
-```
-
-> 实际支持的平台请以 `make plist` 输出为准。
-
----
-
-### 4.2 编译 Kernel
-
-#### AX8860 HAPS 平台
-
-```bash
-cd <AX8860代码根目录>/kernel/linux
-make p=AX8860_haps all install -j32
-```
-
-#### AX525 eMMC 平台
-
-```bash
-cd <AX525代码根目录>/kernel/linux
-make p=AX525_emmc all install -j32
-```
-
-其他平台只需替换 `p=` 后的项目名称：
-
-```bash
-make p=<项目名称> all install -j32
-```
-
-参数说明：
-
-| 参数         | 说明                       |
-| ---------- | ------------------------ |
-| `p=<项目名称>` | 指定目标平台                   |
-| `all`      | 执行完整编译                   |
-| `install`  | 将产物安装到输出目录               |
-| `-j32`     | 使用 32 个并行任务编译，可根据服务器资源调整 |
-|            |                          |
-
----
-
-### 4.3 编译 Boot Wrapper
-
-进入 Boot Wrapper 目录：
-
-```bash
-cd <代码根目录>/boot/boot-wrapper
-```
-
-使用与 Kernel 相同的平台参数进行编译。
-
-例如 AX8860 HAPS：
-
-```bash
-make p=AX8860_haps all install -j32
-```
-
-例如 AX525 eMMC：
-
-```bash
-make p=AX525_emmc all install -j32
-```
-
----
-
-### 4.4 检查编译产物
-
-编译完成后，会在代码根目录的 `build` 目录下生成 `out` 目录：
-
-```text
-<代码根目录>/build/out/
-```
-
-AX8860 HAPS 的常用产物目录示例：
-
-```text
-<代码根目录>/build/out/AX8860_haps_glibc/images/
-```
-
-其中 Trace32 启动脚本通常位于：
-
-```text
-<代码根目录>/build/out/AX8860_haps_glibc/images/cmm/
-```
-
-常用启动脚本：
-
-```text
-start_kernel_ax8860.cmm
-```
-
-> 不同平台、不同 libc 配置下，实际目录名称可能不同，请以 `build/out/` 下生成的内容为准。
-
-到此，代码编译阶段结束。
-
----
-
-## 5. 烧录前准备
-
-### 5.1 为什么需要复制编译产物
-
-开发代码通常位于个人目录，例如：
-
-```text
-/home/<用户名>/ax8860/
-/home/<用户名>/ax525/
-```
-
-但调试使用的是远程 Windows 跳板机。当前服务器只对以下目录开放共享权限：
-
-```text
-/home/public/
-```
-
-个人开发目录 `/home/<用户名>/` 无法直接映射到 Windows 跳板机。
-
-因此，需要将编译产物复制到 `/home/public/` 下的个人目录，再在跳板机上挂载该共享目录。
-
----
-
-### 5.2 创建个人共享目录
-
-建议在 `/home/public/` 下创建以用户名命名的目录：
-
-```bash
-mkdir -p /home/public/<用户名>
-```
-
-建议进一步区分项目及版本：
-
-```bash
-mkdir -p /home/public/<用户名>/ax8860
-mkdir -p /home/public/<用户名>/ax525
-```
-
----
-
-### 5.3 复制编译产物
-
-#### AX8860 示例
-
-```bash
-cp -a <AX8860代码根目录>/build/out/AX8860_haps_glibc \
-    /home/public/<用户名>/ax8860/
-```
-
-也可以复制整个 `out` 目录：
-
-```bash
-cp -a <AX8860代码根目录>/build/out \
-    /home/public/<用户名>/ax8860/
-```
-
-#### AX525 示例
-
-```bash
-cp -a <AX525代码根目录>/build/out \
-    /home/public/<用户名>/ax525/
-```
-
-复制完成后，检查文件是否完整：
-
-```bash
-ls -lh /home/public/<用户名>/ax8860/
-```
-
-> 建议每次复制到带日期或版本号的目录，避免覆盖之前可用的产物。例如：
->
-> ```text
-> /home/public/<用户名>/ax8860/2025xxxx/
-> ```
-
----
-
-## 6. 预约烧录机器
-
-### 6.1 预约入口
-
-HAPS 机器预约地址：
-
-```text
-https://cmdb.aixin-chip.com/crs/
-```
-
-### 6.2 预约注意事项
-
-- 每次最多预约 **1 小时**
-- 当前预约时间段结束后，才能发起新的预约
-- 请根据项目选择对应的 AX8860 或 AX525 资源
-- 预约前确认所选机器是否为 BSP 专用资源
-- 请记录预约信息中的：
-  - 远程 Windows 跳板机 IP
-  - 登录用户名和密码
-  - HAPS 主板/子板资源
-  - 串口信息
-  - 其他资源备注
-
-### 6.3 资源分配表
-
-AX8860 / AX525 的 BSP 专用机器、远程跳板机 IP、密码及 HAPS 子板资源等信息，请查看以下 Wiki：
-
-```text
-https://wiki.aixin-chip.com/pages/viewpage.action?pageId=224112078
-```
-
-```text
-https://wiki.aixin-chip.com/pages/viewpage.action?pageId=224125767
-```
-
-> 具体使用哪一个页面，请根据项目和当前资源分配情况确认。
-
----
-
-## 7. 连接远程跳板机
-
-### 7.1 准备 VNC 软件
-
-通过软件中心安装或加载 VNC 客户端。
-
-### 7.2 连接跳板机
-
-在预约时间段内，根据预约信息填写：
-
-- 跳板机 IP
-- 用户名
-- 密码
-
-通过 VNC 连接到对应的 Windows 跳板机。
-
-> 只能在有效预约时间段内使用对应机器。建议提前准备好代码产物，避免占用预约时间进行编译或大文件复制。
-
----
-
-## 8. 映射编译产物到 Windows
-
-在远程 Windows 跳板机上，将 Linux 服务器的共享目录映射为网络驱动器。
-
-需要映射的 Linux 目录为：
-
-```text
-/home/public/<用户名>/
-```
-
-映射完成后，应能在 Windows 资源管理器中看到编译产物，例如：
-
-```text
-AX8860_haps_glibc/images/
-```
-
-重点确认以下内容可正常访问：
-
-```text
-images/
-images/cmm/
-images/cmm/start_kernel_ax8860.cmm
-```
-
-> 网络驱动器的具体地址、共享名及认证方式请参考团队现有配置。如果不清楚，可咨询同组同事或机器资源维护人员。
-
----
-
-## 9. 使用 HAPS 软件加载 Bitfile
-
-### 9.1 打开 HAPS 软件
-
-在远程 Windows 跳板机上打开对应的 HAPS 管理软件。
-
-如预约资源中指定了 HAPS 编号，例如 HAPS 100，请确认当前连接和操作的是对应设备，避免影响其他使用者。
-
-### 9.2 选择 Bitfile
-
-在 HAPS 软件中，通过 **Bitfile 路径**选择对应项目的 Bitfile 文件或目录。
-
-> 如果不清楚 Bitfile 的位置或应该选择哪个版本，请咨询朱学亮。
-
-### 9.3 下载 Bitfile
-
-选择 Bitfile 后，点击：
-
-```text
-Load All
-```
-
-等待下载完成。
-
-当执行状态显示：
-
-```text
-就绪
-```
-
-说明 Bitfile 下载完成。
-
-> 加载过程中不要关闭 HAPS 软件、断开 VNC 或执行复位操作。
-
----
-
-## 10. HAPS 复位
-
-如果调试过程中需要复位 HAPS，点击：
-
-```text
-Reset HAPS
-```
-
-等待执行状态重新显示：
-
-```text
-就绪
-```
-
-此时表示 HAPS 复位完成。
-
-复位后，通常需要根据实际情况重新通过 Trace32 加载并启动内核。
-
----
-
-## 11. 使用 Trace32 连接 HAPS
-
-### 11.1 确认编译产物
-
-首先确认编译产物已经挂载到 Windows 路径，或者已完整复制到 Windows 本地。
-
-AX8860 HAPS 的目录示例：
-
-```text
-build/out/AX8860_haps_glibc/images/
-```
-
-需要重点确认启动脚本存在：
-
-```text
-images/cmm/start_kernel_ax8860.cmm
-```
-
-### 11.2 打开 Trace32
-
-在远程 Windows 跳板机上打开 Trace32 软件。
-
-### 11.3 运行启动脚本
-
-在 Trace32 中选择：
-
-```text
-Run Script
-```
-
-然后运行：
-
-```text
-images/cmm/start_kernel_ax8860.cmm
-```
-
-等待脚本执行并完成内核加载。
-
-> AX525 或其他平台应使用对应平台的 `.cmm` 脚本，具体文件名请以 `images/cmm/` 目录中的实际文件为准。
-
----
-
-## 12. 串口调试
-
-待 Trace32 完成内核加载并启动后，打开对应串口工具。
-
-如果内核正常启动，应能在串口窗口中看到启动日志。进入系统后，即可通过串口输入 Linux 命令完成调试，例如：
-
-```bash
-uname -a
-```
-
-```bash
-dmesg
-```
-
-```bash
-lsmod
-```
-
-```bash
-cat /proc/interrupts
-```
-
-```bash
-devmem <address>
-```
-
-外设驱动常用日志查看方式：
-
-```bash
-dmesg -w
-```
-
-如果需要过滤特定驱动日志：
-
-```bash
-dmesg | grep -i <关键字>
-```
-
----
-
-## 13. 完整操作流程速查
-
-```text
-1. 选择 AX8860 或 AX525 项目
-        ↓
-2. repo init / repo sync 拉取代码
-        ↓
-3. 进入 kernel/linux 执行 make plist
-        ↓
-4. 编译 kernel/linux
-        ↓
-5. 编译 boot/boot-wrapper
-        ↓
-6. 检查 build/out 下的编译产物
-        ↓
-7. 将产物复制到 /home/public/<用户名>/
-        ↓
-8. 在 CRS 系统预约 HAPS 机器
-        ↓
-9. 通过 VNC 连接预约的 Windows 跳板机
-        ↓
-10. 映射 /home/public/<用户名>/ 网络目录
-        ↓
-11. 打开 HAPS 软件，选择并 Load All 下载 Bitfile
-        ↓
-12. 等待 HAPS 状态显示“就绪”
-        ↓
-13. 打开 Trace32
-        ↓
-14. 运行 images/cmm 下对应的启动脚本
-        ↓
-15. 等待内核加载
-        ↓
-16. 通过串口查看日志并进行调试
-```
-
----
-
-## 14. 常见问题
-
-### 14.1 `make plist` 中没有目标平台
-
-检查以下事项：
-
-1. 当前是否位于正确的 `kernel/linux` 目录
-2. 是否拉取了正确的项目分支
-3. `repo sync` 是否完整成功
-4. Git LFS 文件是否拉取成功
-
-可重新执行：
-
-```bash
-repo sync -c --no-tags
-repo forall -c git lfs pull
-```
-
----
-
-### 14.2 找不到 `build/out` 或产物目录
-
-检查：
-
-1. Kernel 是否编译成功
-2. Boot Wrapper 是否编译成功
-3. 编译命令是否带有 `install`
-4. 是否使用了正确的 `p=` 参数
-5. 编译日志中是否存在错误
-
-示例：
-
-```bash
-make p=AX8860_haps all install -j32
-```
-
----
-
-### 14.3 Windows 无法访问个人开发目录
-
-这是正常现象。当前只开放：
-
-```text
-/home/public/
-```
-
-请先将编译产物复制到：
-
-```text
-/home/public/<用户名>/
-```
-
-然后再从 Windows 跳板机映射该目录。
-
----
-
-### 14.4 HAPS 加载 Bitfile 失败
-
-建议检查：
-
-1. 是否选择了正确项目、正确版本的 Bitfile
-2. 是否操作了预约分配给自己的 HAPS 设备
-3. HAPS 软件是否连接到目标设备
-4. 当前设备是否被其他人占用
-5. Bitfile 路径是否可访问
-6. 是否需要先执行 `Reset HAPS`
-
-如果仍无法确认 Bitfile，请咨询朱学亮。
-
----
-
-### 14.5 Trace32 脚本执行失败
-
-建议检查：
-
-1. HAPS Bitfile 是否已经加载完成
-2. HAPS 状态是否为“就绪”
-3. 是否选择了对应芯片和平台的 `.cmm` 脚本
-4. `images` 目录下的文件是否复制完整
-5. 网络驱动器是否断开
-6. 脚本中引用的文件路径是否有效
-7. 是否需要先复位 HAPS 后再重新执行脚本
-
----
-
-### 14.6 内核加载完成但串口没有输出
-
-建议检查：
-
-1. 串口工具是否连接到正确的 COM 口
-2. 串口波特率等参数是否正确
-3. Trace32 是否真正执行到启动阶段
-4. HAPS 是否发生异常或被复位
-5. 当前 Kernel、Boot Wrapper 和 Bitfile 是否匹配
-6. 是否使用了对应项目的 `images` 产物
-
----
-
-## 15. 新人首次操作建议
-
-首次操作建议请熟悉流程的同事协助，重点确认以下匹配关系：
-
-| 项目 | 需要保持一致的内容 |
-|---|---|
-| 芯片项目 | AX8860 或 AX525 |
-| 编译平台 | 如 `AX8860_haps`、`AX525_emmc` |
-| Bitfile | 与芯片及 HAPS 环境匹配 |
-| Trace32 脚本 | 与芯片平台匹配 |
-| 编译产物 | Kernel、Boot Wrapper 来自同一次或兼容版本编译 |
-| HAPS 设备 | 与预约分配的设备一致 |
-
-建议在预约前完成：
-
-- 代码拉取
-- Kernel 编译
-- Boot Wrapper 编译
-- 编译产物复制
-- Bitfile 路径确认
-- Trace32 脚本确认
-
-这样可以将有限的 1 小时预约时间主要用于 HAPS 加载和实际调试。
+主要改动：硬件 SuperSpeed 从"待验证风险"改为"已确认前提"，带宽可行性结论相应变强（从"可行"到"确定可行"），风险表删掉硬件一票否决项。需要再补里程碑工时预估或里程碑0/2 的验证命令附录吗？
