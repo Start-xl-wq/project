@@ -1,152 +1,213 @@
-# 算力棒 USB 驱动设计 - 流控层
+# 算力棒 USB 驱动设计 - 传输层
 
-## 一、流控层的作用
+## 一、传输层的作用
 
-聚合层解决了**粒度匹配**（URB 利用率、吞吐），但没解决**速率匹配**——当发送方持续快于接收方消费时会出问题。流控层的职责就是让**发送速率跟随接收方的实际消费速率**。
+传输层是整个驱动栈的地基，向上层（聚合层）提供一个**异步、深队列、双向**的 block 收发接口，向下对接 Linux functionfs 的 endpoint 文件。它的核心职责就一件事：
 
-先厘清一个前提：USB bulk 有硬件级背压。接收方 RX ring 无空闲 iocb 时，host controller 回 NAK，发送方 AIO 提交阻塞——**数据不会丢，但会阻塞**。所以流控要解决的不是丢包，而是这个"阻塞"带来的两个问题：
+> **把固定大小的 block（URB）以尽可能高的并发喂给 USB 硬件，用队列深度掩盖单次传输的往返延迟，跑满 SuperSpeed 带宽。**
 
-1. **吞吐掉底**：接收方消费跟不上，发送方长期被 NAK 硬阻塞在传输层，这个阻塞发生在底层，不可观测、不可控。
-2. **死锁**：双向同时阻塞在写，谁也推进不了。
+它**不关心** block 里装的是什么（TLV、slab、credit 报文都一样对待），**不做**聚合/拆帧（那是聚合层），**不做**速率匹配（那是流控层）。它只做一件事：**可靠、高并发地搬运定长 block**。
 
-**为什么聚合层的双缓冲不够？** 聚合层的双缓冲 + 深 RX ring 只能吸收**短时抖动**。当发送方**持续**快于接收方消费时，ring 再深也会被填满并阻塞回发送方。
-
-**结论**：治标靠深 ring，治本必须靠应用级 credit。**pkt 和 msg 两条通道都需要 credit**——两条通道都有各自的 RX ring，都会被灌满阻塞，只是粒度和批量策略不同。
+为什么必须异步深队列？USB 每次传输都有协议往返开销（令牌包、握手包、总线调度间隙）。如果同步收发——发一个 block、等完成、再发下一个——总线在等待期间空闲，带宽利用率极低。用 AIO 一次性挂起几十个 iocb，让 host controller 流水线式连续调度，才能填满总线。
 
 ---
 
-## 二、整体位置
+## 二、技术选型：functionfs + AIO
 
-流控层夹在应用层和聚合层之间，对 pkt / msg 两条通道各维护一套 credit。
+**functionfs（FunctionFS）**：Linux gadget 子系统提供的用户态 USB function 接口。通过读写 `/dev/ffs/ep1`、`/dev/ffs/ep2` 这样的 endpoint 文件收发数据，descriptor 和 string 在初始化时一次性写入 `ep0`。选它的原因：驱动逻辑全在用户态，无需写内核 gadget 驱动，调试、迭代快。
+
+**Linux AIO（libaio，io_submit/io_getevents）**：对 functionfs 的 endpoint fd 提交异步 I/O。选它而不是同步 read/write 或 epoll 的原因：
+
+- functionfs 的 endpoint fd 对 `O_NONBLOCK` + epoll 支持不完整，且 epoll 只解决"何时可读写"，解决不了"一次挂起多个传输"。
+- AIO 天然支持**深队列**：`io_submit` 一次提交多个 iocb，内核逐个转成 URB 排入 host controller，完成后通过 `io_getevents` 批量收割。这正好匹配"深队列掩盖延迟"的需求。
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                          应用层                                │
-│  send_pkt/recv_pkt/release_pkt   send_msg/recv_msg/release_msg│
-└────┬───────────▲────────┬──────────┬───────────▲────────┬─────┘
-     │TX         │RX      │release    │TX         │RX      │release
-     ▼           │        ▼           ▼           │        ▼
-┌──────────────────────────────────────────────────────────────┐
-│                       流控层                                   │
-│   pkt_tx_flow / pkt_rx_flow    msg_tx_flow / msg_rx_flow      │
-│   credit 够才放行，否则挂起；攒够 release 批量回传 credit       │
-└────┬───────────▲────────────────────┬───────────▲────────┬────┘
-     │           │                    │           │        │
-     ▼           │                    ▼           │        ▼
-┌──────────────────────────────────────────────────────────────┐
-│                       帧聚合层                                 │
-│   pkt TX（聚合）  pkt RX（拆帧）      msg TX（直透） msg RX      │
-└──────────────────────────────────────────────────────────────┘
+用户态                          内核态                    硬件
+ │                               │                        │
+ │─ io_submit(N iocb) ──────────→│                        │
+ │                               │─ 转成 N 个 URB ────────→│ host controller
+ │                               │                        │ 流水线连续调度
+ │                               │←──── URB 完成 ──────────│
+ │←─ io_getevents(批量收割) ─────│                        │
 ```
 
 ---
 
-## 三、credit 机制
+## 三、整体结构
 
-credit 是"接收方准备好的接收 buffer 数量"的令牌。pkt 和 msg 都用同一套模型，只是粒度不同：
+传输层维护两条独立的通道，分别对应两个 functionfs endpoint。每条通道内部 TX / RX 方向各自维护独立的 iocb ring。所有通道共享一个 `io_context_t`，用一个线程统一 `io_getevents` 收割。
 
-| | pkt credit | msg credit |
+```
+                       io_context_t（共享 AIO 上下文）
+                                   │
+        ┌──────────────────────────┴──────────────────────────┐
+        │                                                      │
+  msg endpoint (ep1)                              pkt endpoint (ep2)
+  ┌──────────────────────────┐                  ┌──────────────────────────────┐
+  │ block size = 4KB         │                  │ block size = 1MB             │
+  │                          │                  │                              │
+  │  TX iocb ring (depth=8)  │                  │  TX iocb ring (depth=32~64)  │
+  │  [iocb][iocb]...[8]      │                  │  [iocb][iocb]...[64]         │
+  │   ↓ 每个 = 一次小 URB     │                  │   ↓ 每个 = 一个完整 slab      │
+  │                          │                  │                              │
+  │  RX iocb ring (depth=8)  │                  │  RX iocb ring (depth=32~64)  │
+  │  [iocb][iocb]...[8]      │                  │  [iocb][iocb]...[64]         │
+  │   ↓ 预挂起，等 host 下发   │                  │   ↓ 预挂起，等 host 下发1MB    │
+  └──────────────────────────┘                  └──────────────────────────────┘
+```
+
+两条通道的参数差异（由上层需求决定，传输层只按配置执行）：
+
+| | msg endpoint (ep1) | pkt endpoint (ep2) |
 |---|---|---|
-| credit 单位 | 1 slab（1MB） | 1 msg block（4KB） |
-| 初始 credit | 32~64 | 4~8 |
-| 扣减时机 | flush 一个 slab → credit-- | 提交一个 msg → credit-- |
-| 补充时机 | 应用真正消费完 slab，`release_pkt(n)` | 应用真正消费完 msg，`release_msg(n)` |
-| 回传批量 refill_batch | 16 个攒一次 | 2~4 个攒一次（msg 稀疏，批量要小） |
+| block size | 4KB | 1MB |
+| AIO 队列深度 | 4~8 | 32~64 |
+| 设计目标 | 低延迟，接受低利用率 | 高吞吐，队列越深越好 |
+| 服务对象 | 控制/命令/credit 报文 | 大数据帧（slab） |
 
-```
-发送方                                   接收方
- │── 初始 credit（我准备了N个接收buffer）─────────→│
- │←──────── data ─────────────────────────────────│  credit-- 
- │←──────── data ─────────────────────────────────│  credit-- 
- │   ...（接收方真正消费掉一批后）                   │
- │←────── credit 补充 +batch ──────────────────────│  credit += batch
- │←──────── data ─────────────────────────────────│  继续发
-```
-
-通用规则：
-
-- **发送侧**：每发一个单元，credit 减 1。`credit <= 低水位` 时**在流控层的 send 入口挂起**（或返回 EAGAIN），**绝不把数据继续灌到传输层去被 USB NAK 硬阻塞**——让背压发生在可控、可观测的逻辑层。
-- **接收侧**：绑定"**真正消费完**"回传 credit，不是"收到"就回。只有绑定消费完成，credit 才真实反映接收方的处理能力。
+**为什么分成两个 endpoint**：粒度隔离（小包低延迟 vs 大包高吞吐互不干扰），且为流控层的 credit 报文预留独立通道（credit 报文借道 msg 通道，不被大数据阻塞）。这是上层正确性的物理前提。
 
 ---
 
-## 四、credit 报文的通道与"免流控"约束（关键）
+## 四、TX 方向
 
-所有方向的 credit 补充报文，**统一走 msg 通道回传**（4KB，低延迟）。这带来一个必须处理的循环依赖：
-
-> **msg 通道自己也有 credit，而 credit 报文又是一条 msg——如果 credit 报文也消耗 msg credit，msg credit 耗尽时就再也发不出任何 credit，形成自我死锁。**
-
-死锁链：
+上层（聚合层）把一个填好的 buffer 交给传输层，传输层封装成 iocb 提交。
 
 ```
-msg credit 耗尽 → 想回传 credit 补充报文，但它自己也是 msg → 发不出去
-→ 对端永远等不到 credit → 双方 msg 通道全部停摆 → 死锁
-```
-
-**解法：credit 报文是"免流控"的控制报文（out-of-band control）**，不受任何 credit 约束：
-
-- credit 报文**不消耗** msg credit，也不占用普通 msg 的 RX ring 配额。
-- 接收侧在 msg RX ring 中**预留固定数量的 iocb 专供控制报文**（如 depth 8 里留 2 个），保证 credit 报文永远有落脚点。
-- 拆帧时按 msg 头部的类型字段区分：`TYPE_DATA`（普通 msg，走 msg_rx_flow 计入 credit）与 `TYPE_CREDIT`（控制报文，直接更新对应通道的发送方 credit 计数，不计消费、不回传）。
-
-这样：**普通 pkt / 普通 msg 都受 credit 约束，唯独 credit 报文自身免流控**，打破循环依赖。
-
-同时，pkt 与 msg 通道物理隔离（独立 endpoint）这一点，在开启流控后从"优化项"升级为"正确性必需项"：若 credit 报文和大数据挤在同一通道，会排在几十 MB 数据后面才到达，流控失效。聚合层的双 endpoint 设计正好满足这一前提。
-
----
-
-## 五、TX 与 RX、pkt 与 msg 各自独立
-
-发送/接收是独立方向，pkt/msg 是独立通道，**四者各维护一套独立 credit**（独立计数器、水位、回传逻辑），互不共享。用同一套对称代码实例化四个实例即可：
-
-```
-Device 侧四套 flow：
-   pkt_tx_flow  → 发结果(IN)：flush slab → credit--；收 host 的 credit-msg → 补充
-   pkt_rx_flow  → 收输入(OUT)：release_pkt(n) 攒够 → 回传 credit 给 host
-   msg_tx_flow  → 发控制/状态：发 msg → credit--；收 host 的 credit-msg → 补充
-   msg_rx_flow  → 收控制/命令：release_msg(n) 攒够 → 回传 credit 给 host
+上层调用 tx_submit(channel, buf, len)
+    │
+    ▼
+从对应通道的 TX iocb ring 取一个空闲 iocb
+    │
+    ├── ring 无空闲 iocb ──→ 返回 EAGAIN / 阻塞
+    │                        （由上层双缓冲 + 流控决定如何处理）
+    ▼
+io_prep_pwrite(iocb, ep_fd, buf, len, 0)
+    │
+    ▼
+io_submit(ctx, 1, &iocb)  ──→ 内核转 URB 排入 host controller
+    │
+    ▼
+（异步）io_getevents 收到该 iocb 完成事件
+    │
+    ▼
+回调上层 tx_complete(iocb->buf)，归还 iocb 到 ring
 ```
 
 要点：
 
-- **credit 报文流向与数据流相反**：谁是接收方，谁往回发 credit。
-- credit-msg 用字段区分"补给哪条通道、哪个方向"（如 `{channel: pkt/msg, dir: tx/rx, delta: n}`）。多个方向的 credit 补充可以**合并进一条 credit-msg**，进一步减少控制报文数量。
-- **某方向是否启用 credit**，取决于"发送方是否可能**持续**快于接收方消费"：
-  - **pkt 发结果（device→host）**：结果量大，几乎一定要开。
-  - **pkt 发输入（host→device）**：输入大到能撑爆 device 内存就要开（device 内存通常比 host 紧张）。
-  - **msg 双向**：控制/命令流通常稀疏，但**突发**（如 host 批量下发一堆命令）也会灌满 device 的 msg RX ring，所以 msg 同样需要 credit 兜住突发。
+- **TX 提交是纯异步的**：`io_submit` 立即返回，不等传输完成。上层可以连续提交多个 buffer 填满 ring depth，让 host controller 流水线调度。
+- **iocb 与 buffer 的生命周期**：buffer 由上层（聚合层双缓冲）拥有，传输层只借用引用直到 `tx_complete`。完成前上层不得复用该 buffer。
+- **ring 满即背压**：TX ring 无空闲 iocb 时返回 EAGAIN。这是传输层能感知的最底层背压——但它只反映"本端 AIO 未排空"，不反映对端消费进度，所以真正的端到端速率匹配必须靠流控层。
 
 ---
 
-## 六、与聚合层双缓冲的关系
+## 五、RX 方向
 
-流控层的 credit 背压和聚合层的双缓冲背压是**两个层次、互补**的机制：
+RX 与 TX 相反：传输层**主动预挂起**一批接收 iocb 到 ring，等 host 下发数据填充，完成后回调上层。
 
-| | 聚合层双缓冲阻塞 | 流控层 credit |
+```
+初始化：把 RX ring 全部 iocb 预挂起
+    │
+    ▼
+for each iocb in RX ring:
+    io_prep_pread(iocb, ep_fd, buf, block_size, 0)
+    io_submit(ctx, 1, &iocb)   ──→ 等待 host 下发数据
+    │
+    ▼
+（异步）host 下发一个 block，某 iocb 完成
+    │
+    ▼
+io_getevents 收割，得到 (buf, 实际长度)
+    │
+    ▼
+回调上层 rx_complete(channel, buf, actual_len)
+    │
+    ▼
+★ 立即向 RX ring 补挂一个新 iocb ★
+    （保持 ring 始终满深度，不让接收窗口出现空档）
+```
+
+**RX 的第一原则：ring 永远保持满深度。** 每收割一个完成事件，立刻补挂一个新 iocb。如果补挂不及时，RX ring 出现空闲窗口，host 下发的数据无处落脚，host controller 回 NAK，发送方被硬阻塞——这正是流控层要极力避免的不可控阻塞。传输层通过"收割即补挂"把这个窗口压到最小。
+
+**buffer 从哪来**：RX buffer 同样由上层管理（聚合层 RX 双缓冲）。补挂 iocb 时，传输层向上层要一个空闲 buffer；若上层暂时没有空闲 buffer（拆帧慢），则该 iocb 暂缓补挂——这时才轮到上层双缓冲和流控 credit 发挥作用。
+
+---
+
+## 六、事件收割：统一的 io_getevents 循环
+
+所有通道、所有方向的完成事件，由一个专用线程统一收割，避免多线程争抢 `io_context`。
+
+```
+event_loop（专用线程）:
+    while running:
+        n = io_getevents(ctx, min=1, max=BATCH, events[], timeout)
+        for i in 0..n:
+            iocb  = events[i].obj
+            res   = events[i].res      # 实际传输字节数，或负错误码
+            ch    = iocb->channel      # 反查属于哪条通道/方向
+
+            if res < 0:
+                → 错误处理（见第七节）
+            elif iocb 是 TX:
+                → tx_complete(ch, iocb->buf)；iocb 归还 ring
+            else:  # RX
+                → rx_complete(ch, iocb->buf, res)
+                → 立即补挂新 RX iocb
+```
+
+要点：
+
+- **批量收割**：`io_getevents` 一次可收割多个事件（`max=BATCH`），减少系统调用次数。
+- **单线程收割 + 回调分发**：收割线程只做分发，重活（拆帧、拷贝）交回上层线程或线程池，避免阻塞收割循环拖慢整个流水线。
+- **timeout 配合**：`io_getevents` 带超时，让收割线程能周期性处理定时任务（如 TX flush 的 timeout 触发信号）或响应退出请求。
+
+---
+
+## 七、异常处理
+
+传输层直面硬件，必须处理这些 endpoint 层事件：
+
+| 事件 | 现象 | 处理 |
 |---|---|---|
-| 层次 | 本地背压 | 端到端背压 |
-| 保证 | inflight buffer 完成后再复用 | 对端有空位、消费得过来才发 |
-| 感知范围 | 只感知本端 AIO 完成 | 感知对端消费进度 |
+| USB 断连 / 拔出 | endpoint fd 上 I/O 返回 `-ESHUTDOWN` / `-ECONNRESET` | 标记通道失效，取消所有在途 iocb，通知上层重连 |
+| endpoint 未使能 | host 尚未 set_configuration，读写返回 `-ENODEV` | 等待 functionfs `ep0` 上报 `FUNCTIONFS_ENABLE` 事件后再启动收发 |
+| 传输被 halt/stall | 某 iocb 返回错误 | 清 halt（`FUNCTIONFS_CLEARHALT`），重挂该 iocb |
+| io_submit 返回 EAGAIN | AIO 上下文事件槽满 | 退避重试，或据此判定 ring 已满向上层背压 |
+| 短包 (short packet) | RX `res < block_size` | 正常情况——把实际长度交给上层，由上层（聚合层）按 TLV 判断边界 |
 
-两者叠加协作：
-
-- credit 决定"**能不能发**"，双缓冲决定"**发出去后 buffer 怎么复用**"。
-- credit 充足时，双缓冲全速轮转，跑满带宽。
-- credit 耗尽时，在 send 入口挂起，双缓冲自然停在满状态，不会有数据继续下沉到传输层被硬阻塞。
+**ep0 控制事件循环**：除了数据 endpoint，传输层还需监听 `ep0` 的 functionfs 事件（`BIND` / `UNBIND` / `ENABLE` / `DISABLE` / `SETUP`），驱动整个 function 的生命周期。数据通道的启停必须跟随 `ENABLE`/`DISABLE`，否则会对未就绪的 endpoint 提交 I/O 而报错。
 
 ---
 
-## 七、端到端保障链（小结）
+## 八、初始化流程
 
 ```
-硬件层：USB bulk NAK ───────── 兜底不丢数据（但会阻塞）
-传输层：pkt/msg RX ring ─────── 吸收短时抖动，完成回调里立即补挂 iocb
-聚合层：RX 双缓冲 + TLV 拆帧 ── 拆帧与接收并行；大包分片重组
-流控层：pkt/msg × tx/rx 四套 credit ─ 钳住发送速率 = 对端消费速率
-                                     credit 报文免流控，走独立 msg 通道回传
-架构上：pkt/msg 独立 endpoint ─ 保证 credit 送得到；破解双向死锁
+1. 挂载 functionfs：mount -t functionfs stick /dev/ffs
+2. 打开 ep0，写入 descriptors + strings
+      → 定义两个 bulk endpoint：ep1(4KB msg)、ep2(1MB pkt)
+3. 等待 ep0 上报 FUNCTIONFS_BIND / FUNCTIONFS_ENABLE
+4. 打开 ep1、ep2 endpoint fd
+5. io_setup(MAX_EVENTS, &ctx)  创建共享 AIO 上下文
+6. 为每条通道分配 TX/RX iocb ring 及关联 buffer 池
+7. RX ring 全部预挂起 iocb（进入接收就绪）
+8. 启动 event_loop 收割线程
+9. 向上层（聚合层）暴露 tx_submit / rx_complete 回调接口
 ```
 
-一句话总结：
+---
 
-> **粒度匹配靠聚合层，速率匹配靠流控层；深 ring 治标、credit 治本；pkt/msg 通道独立保证 credit 送得到，pkt/msg × tx/rx 四套独立 credit 保证每条通道每个方向都各自受控；唯独 credit 报文自身免流控，打破循环依赖。**
+## 九、与上层的接口契约（小结）
+
+传输层向聚合层暴露的最小接口：
+
+```
+tx_submit(channel, buf, len)      → 异步提交发送，ring 满返回 EAGAIN
+tx_complete(channel, buf)         ← 发送完成回调，buf 可复用
+rx_complete(channel, buf, len)    ← 收到一个 block 回调（len 为实际长度）
+rx_provide_buffer(channel)        → 上层提供空闲 RX buffer 供补挂 iocb
+```
+
+**职责边界一句话**：
+
+> 传输层只保证"定长 block 高并发、可靠地上下总线，ring 尽量不空档"；至于 block 里怎么拼包/拆包（聚合层）、发多快才不撑爆对端（流控层），传输层一概不管——**它是一根又粗又直的管子，粗靠深队列，直靠不掺业务逻辑。**
