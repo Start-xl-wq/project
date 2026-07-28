@@ -1,213 +1,100 @@
-# 算力棒 USB 驱动设计 - 传输层
+收到你的描述。你的描述非常清晰，现象、协议规范、硬件设计的局限以及私有修复方案都交代得很清楚。
 
-## 一、传输层的作用
-
-传输层是整个驱动栈的地基，向上层（聚合层）提供一个**异步、深队列、双向**的 block 收发接口，向下对接 Linux functionfs 的 endpoint 文件。它的核心职责就一件事：
-
-> **把固定大小的 block（URB）以尽可能高的并发喂给 USB 硬件，用队列深度掩盖单次传输的往返延迟，跑满 SuperSpeed 带宽。**
-
-它**不关心** block 里装的是什么（TLV、slab、credit 报文都一样对待），**不做**聚合/拆帧（那是聚合层），**不做**速率匹配（那是流控层）。它只做一件事：**可靠、高并发地搬运定长 block**。
-
-为什么必须异步深队列？USB 每次传输都有协议往返开销（令牌包、握手包、总线调度间隙）。如果同步收发——发一个 block、等完成、再发下一个——总线在等待期间空闲，带宽利用率极低。用 AIO 一次性挂起几十个 iocb，让 host controller 流水线式连续调度，才能填满总线。
+下面我先为你梳理逻辑链条，确认闭环情况，并指出一个可能需要你内部确认的微小逻辑断点，最后输出标准的 Wiki 文档。
 
 ---
 
-## 二、技术选型：functionfs + AIO
+### 第一部分：逻辑梳理与闭环确认
 
-**functionfs（FunctionFS）**：Linux gadget 子系统提供的用户态 USB function 接口。通过读写 `/dev/ffs/ep1`、`/dev/ffs/ep2` 这样的 endpoint 文件收发数据，descriptor 和 string 在初始化时一次性写入 `ep0`。选它的原因：驱动逻辑全在用户态，无需写内核 gadget 驱动，调试、迭代快。
+#### 1. 正常枚举流程逻辑链
+*   **现象**：Device 插入 Host，Host 开始枚举，最终工作在 HS 模式。
+*   **机制**：Device 插入 -> D+/D- 呈现 J态（D+=1, D-=0），此时电压为 3.3V（FS级别的电压） -> Host 检测到 D+ 被 1.5k 电阻拉高，识别为 FS 设备并开始 FS 枚举 -> 枚举中双方完成 HS Chirp 握手 -> 切换至 HS 模式，此时线态逻辑仍为 1,0，但物理电压降至 400mV（HS 线路电压）。
+*   **闭环状态**：**完全闭环**。符合 USB 2.0 协议规范。
 
-**Linux AIO（libaio，io_submit/io_getevents）**：对 functionfs 的 endpoint fd 提交异步 I/O。选它而不是同步 read/write 或 epoll 的原因：
+#### 2. 假设1：Host 主动 Suspend 逻辑链
+*   **现象**：Host 停止发 SOF，Device 触发 Suspend，等待 Resume。
+*   **机制**：Host 停发 SOF -> Device 检测到 SOF 缺失（超时） -> 触发 Suspend Event -> 线路保持 J态（D+=1, D-=0），且因为是 HS 模式，电压维持 400mV。
+*   **闭环状态**：**完全闭环**。符合 USB 2.0 协议规范。
 
-- functionfs 的 endpoint fd 对 `O_NONBLOCK` + epoll 支持不完整，且 epoll 只解决"何时可读写"，解决不了"一次挂起多个传输"。
-- AIO 天然支持**深队列**：`io_submit` 一次提交多个 iocb，内核逐个转成 URB 排入 host controller，完成后通过 `io_getevents` 批量收割。这正好匹配"深队列掩盖延迟"的需求。
+#### 3. 假设2：Device 主动拔出（异常场景）逻辑链
+*   **现象**：Device 拔出，由于 IP 设计缺陷，只触发 Suspend，未触发 Disconnect。重新插入 Host 无法枚举。
+*   **机制**：Device 物理拔出 -> 失去 Host 的 SOF -> Device 触发 Suspend Event -> 由于 IP 缺少 pad 接出，无法产生 Disconnect 事件（正常应产生 SE0 信号） -> 线路保持在 Suspend 时的状态：逻辑 J态（1,0），物理电压 400mV。
+*   **重新插入失效原因**：Device 重新插入时，D+ 保持 400mV。对于 Host 来说，必须检测到 D+ 电压从 0V 跳变到 2.0V 以上（通过 1.5k 上拉）才会触发“连接”中断。400mV 远低于 Host 的检测阈值，Host 认为没有设备插入，故不发起枚举。
+*   **闭环状态**：**完全闭环**。合理解释了为何“带着拔出前的状态重新插入会导致 Host 无响应”。
 
-```
-用户态                          内核态                    硬件
- │                               │                        │
- │─ io_submit(N iocb) ──────────→│                        │
- │                               │─ 转成 N 个 URB ────────→│ host controller
- │                               │                        │ 流水线连续调度
- │                               │←──── URB 完成 ──────────│
- │←─ io_getevents(批量收割) ─────│                        │
-```
+#### 4. 私有修复方案逻辑链
+*   **现象**：PHY 增加检测机制，拔出后自动恢复电压，重新插入可枚举。
+*   **机制**：Device 物理拔出 -> 失去 SOF，触发 Suspend -> **【私有逻辑介入】** PHY 检测到拔出动作 -> 自动将 D+ 电压从 400mV 强制拉回/恢复到 3.3V -> Device 重新插入 Host -> Host 检测到 D+ 3.3V 跳变 -> 正常触发枚举。
+*   **闭环状态**：**基本闭环，但存在一个逻辑跳跃（需确认）**。
 
----
-
-## 三、整体结构
-
-传输层维护两条独立的通道，分别对应两个 functionfs endpoint。每条通道内部 TX / RX 方向各自维护独立的 iocb ring。所有通道共享一个 `io_context_t`，用一个线程统一 `io_getevents` 收割。
-
-```
-                       io_context_t（共享 AIO 上下文）
-                                   │
-        ┌──────────────────────────┴──────────────────────────┐
-        │                                                      │
-  msg endpoint (ep1)                              pkt endpoint (ep2)
-  ┌──────────────────────────┐                  ┌──────────────────────────────┐
-  │ block size = 4KB         │                  │ block size = 1MB             │
-  │                          │                  │                              │
-  │  TX iocb ring (depth=8)  │                  │  TX iocb ring (depth=32~64)  │
-  │  [iocb][iocb]...[8]      │                  │  [iocb][iocb]...[64]         │
-  │   ↓ 每个 = 一次小 URB     │                  │   ↓ 每个 = 一个完整 slab      │
-  │                          │                  │                              │
-  │  RX iocb ring (depth=8)  │                  │  RX iocb ring (depth=32~64)  │
-  │  [iocb][iocb]...[8]      │                  │  [iocb][iocb]...[64]         │
-  │   ↓ 预挂起，等 host 下发   │                  │   ↓ 预挂起，等 host 下发1MB    │
-  └──────────────────────────┘                  └──────────────────────────────┘
-```
-
-两条通道的参数差异（由上层需求决定，传输层只按配置执行）：
-
-| | msg endpoint (ep1) | pkt endpoint (ep2) |
-|---|---|---|
-| block size | 4KB | 1MB |
-| AIO 队列深度 | 4~8 | 32~64 |
-| 设计目标 | 低延迟，接受低利用率 | 高吞吐，队列越深越好 |
-| 服务对象 | 控制/命令/credit 报文 | 大数据帧（slab） |
-
-**为什么分成两个 endpoint**：粒度隔离（小包低延迟 vs 大包高吞吐互不干扰），且为流控层的 credit 报文预留独立通道（credit 报文借道 msg 通道，不被大数据阻塞）。这是上层正确性的物理前提。
+> **⚠️ 逻辑断点确认（仅供你内部评估）：**
+> 在私有方案中，“**PHY 能检测到拔出**”这一步是关键。既然前面提到“没有 pad 接出导致没办法触发 disconnect”，那么 PHY 是靠什么信号判断发生了拔出的？
+> *可能的情况：* 如果是 Device 自供电（未断电），可能是通过检测 VBUS 掉电来告知 PHY 发生了拔出；或者是 PHY 内部有专门的 ID/VBUS 检测引脚。只要 PHY 有明确的输入源（如 VBUS falling edge）来判断拔出，这段逻辑就完全闭环。
 
 ---
 
-## 四、TX 方向
+### 第二部分：Wiki 文档输出
 
-上层（聚合层）把一个填好的 buffer 交给传输层，传输层封装成 iocb 提交。
+以下是为您整理的 Wiki 文档，可以直接复制到您团队的知识库中。
 
-```
-上层调用 tx_submit(channel, buf, len)
-    │
-    ▼
-从对应通道的 TX iocb ring 取一个空闲 iocb
-    │
-    ├── ring 无空闲 iocb ──→ 返回 EAGAIN / 阻塞
-    │                        （由上层双缓冲 + 流控决定如何处理）
-    ▼
-io_prep_pwrite(iocb, ep_fd, buf, len, 0)
-    │
-    ▼
-io_submit(ctx, 1, &iocb)  ──→ 内核转 URB 排入 host controller
-    │
-    ▼
-（异步）io_getevents 收到该 iocb 完成事件
-    │
-    ▼
-回调上层 tx_complete(iocb->buf)，归还 iocb 到 ring
-```
+***
 
-要点：
+# USB Device 断连恢复与枚举机制说明
 
-- **TX 提交是纯异步的**：`io_submit` 立即返回，不等传输完成。上层可以连续提交多个 buffer 填满 ring depth，让 host controller 流水线调度。
-- **iocb 与 buffer 的生命周期**：buffer 由上层（聚合层双缓冲）拥有，传输层只借用引用直到 `tx_complete`。完成前上层不得复用该 buffer。
-- **ring 满即背压**：TX ring 无空闲 iocb 时返回 EAGAIN。这是传输层能感知的最底层背压——但它只反映"本端 AIO 未排空"，不反映对端消费进度，所以真正的端到端速率匹配必须靠流控层。
+## 1. 概述
+本文档主要描述基于 Linux SoC 的 USB Device 在与 Windows Host 交互时，因主动断连（拔出）引发的枚举失败问题，以及其背后的 USB 协议原理与基于 PHY 的私有修复方案。
 
----
+**适用场景：**
+*   **Host:** Windows PC
+*   **Device:** Linux SoC (USB Device)
+*   **Speed:** High Speed (HS, 480Mbps)
 
-## 五、RX 方向
+## 2. 正常 USB 枚举与状态流转
+USB High Speed 设备的枚举过程涉及全速（FS）与高速（HS）的切换，具体流程如下：
 
-RX 与 TX 相反：传输层**主动预挂起**一批接收 iocb 到 ring，等 host 下发数据填充，完成后回调上层。
+1.  **连接与检测**：Device 插入 Host。此时 D+ 被拉高，D- 拉低（即逻辑 `1, 0`，J态），物理电压为 **3.3V**（FS 电平标准）。
+2.  **Host 识别**：Host 检测到 D+ 的 3.3V，识别设备为 Full Speed 设备，开始发送复位（Reset）等枚举指令。
+3.  **HS 握手与切换**：在 FS 模式枚举过程中，Host 与 Device 进行 High Speed Chirp 握手。握手成功后，双方切换至 HS 模式。
+4.  **HS 正常工作态**：切换完成后，线态逻辑仍保持 `1, 0`（J态），但物理电压从 3.3V 降至 **400mV**（HS 电平标准）。此后设备以 HS 模式工作。
 
-```
-初始化：把 RX ring 全部 iocb 预挂起
-    │
-    ▼
-for each iocb in RX ring:
-    io_prep_pread(iocb, ep_fd, buf, block_size, 0)
-    io_submit(ctx, 1, &iocb)   ──→ 等待 host 下发数据
-    │
-    ▼
-（异步）host 下发一个 block，某 iocb 完成
-    │
-    ▼
-io_getevents 收割，得到 (buf, 实际长度)
-    │
-    ▼
-回调上层 rx_complete(channel, buf, actual_len)
-    │
-    ▼
-★ 立即向 RX ring 补挂一个新 iocb ★
-    （保持 ring 始终满深度，不让接收窗口出现空档）
-```
+## 3. 场景分析：Host 主动挂起
+当 Host 决定挂起设备时（例如 PC 休眠），交互逻辑如下：
 
-**RX 的第一原则：ring 永远保持满深度。** 每收割一个完成事件，立刻补挂一个新 iocb。如果补挂不及时，RX ring 出现空闲窗口，host 下发的数据无处落脚，host controller 回 NAK，发送方被硬阻塞——这正是流控层要极力避免的不可控阻塞。传输层通过"收割即补挂"把这个窗口压到最小。
+1.  **Host 停发 SOF**：Host 停止发送 Start of Frame (SOF) 包。
+2.  **Device 感知**：Device 检测到 SOF 缺失，触发 USB Suspend 事件。
+3.  **物理状态保持**：线路保持在挂起前的状态，即 D+/D- 逻辑保持 `1, 0`，且物理电压维持 **400mV**。等待 Host 主动 Resume。
 
-**buffer 从哪来**：RX buffer 同样由上层管理（聚合层 RX 双缓冲）。补挂 iocb 时，传输层向上层要一个空闲 buffer；若上层暂时没有空闲 buffer（拆帧慢），则该 iocb 暂缓补挂——这时才轮到上层双缓冲和流控 credit 发挥作用。
+## 4. 问题场景：Device 主动拔出导致重新插入无法枚举
+当 Device 端主动从 Host 拔出时，由于我们 SoC 的 IP 设计局限，会出现异常状态保持，导致后续无法枚举。
 
----
+### 4.1 异常现象
+设备拔出后，若再次插入 Host，Host 无法识别到设备插入，不会发起枚举。
 
-## 六、事件收割：统一的 io_getevents 循环
+### 4.2 原理分析
+1.  **异常的断连触发**：
+    *   **正常 USB 协议**：Device 拔出应触发 `Disconnect` 事件（线态变为 SE0，即 D+/D- 均为 0V）以及 `Suspend` 事件（SOF 丢失）。
+    *   **当前 IP 局限**：由于 Device IP 设计上缺少相应的 pad 接出，无法正确产生 `Disconnect` 事件。拔出后仅能因 SOF 丢失而触发 `Suspend` 事件。
+2.  **错误状态保持**：
+    *   触发 Suspend 后，Device 保持在挂起状态，D+/D- 逻辑保持 `1, 0`，物理电压维持在 **400mV**。
+3.  **重新插入失败根因**：
+    *   当设备再次插入 Host 时，D+ 提供的是 **400mV** 电压。
+    *   USB Host 检测设备插入依赖于 D+ 上的电压跳变（需达到约 2.0V~3.3V）。
+    *   400mV 低于 Host 的检测阈值，Host 认为无设备插入，导致枚举流程无法启动。
 
-所有通道、所有方向的完成事件，由一个专用线程统一收割，避免多线程争抢 `io_context`。
+## 5. 解决方案：PHY 自动电平恢复机制（私有方案）
+为了解决上述因缺少 Disconnect 事件导致的 400mV 锁死问题，在 USB PHY 层面引入了私有修复机制。
 
-```
-event_loop（专用线程）:
-    while running:
-        n = io_getevents(ctx, min=1, max=BATCH, events[], timeout)
-        for i in 0..n:
-            iocb  = events[i].obj
-            res   = events[i].res      # 实际传输字节数，或负错误码
-            ch    = iocb->channel      # 反查属于哪条通道/方向
+### 5.1 机制原理
+1.  **拔出检测**：当设备物理拔出时（通过 VBUS 检测等机制），PHY 硬件能够感知到断连动作。
+2.  **电平强制恢复**：PHY 检测到拔出后，自动将 D+ 的物理电压从 HS 模式的 **400mV** 恢复至 FS 模式的 **3.3V**。
+3.  **恢复正常枚举**：当设备重新插入 Host 时，D+ 提供 3.3V 电压，Host 能够正常检测到电压跳变，从而触发标准 USB 枚举流程（见第 2 节）。
 
-            if res < 0:
-                → 错误处理（见第七节）
-            elif iocb 是 TX:
-                → tx_complete(ch, iocb->buf)；iocb 归还 ring
-            else:  # RX
-                → rx_complete(ch, iocb->buf, res)
-                → 立即补挂新 RX iocb
-```
+### 5.2 逻辑状态对比表
 
-要点：
-
-- **批量收割**：`io_getevents` 一次可收割多个事件（`max=BATCH`），减少系统调用次数。
-- **单线程收割 + 回调分发**：收割线程只做分发，重活（拆帧、拷贝）交回上层线程或线程池，避免阻塞收割循环拖慢整个流水线。
-- **timeout 配合**：`io_getevents` 带超时，让收割线程能周期性处理定时任务（如 TX flush 的 timeout 触发信号）或响应退出请求。
-
----
-
-## 七、异常处理
-
-传输层直面硬件，必须处理这些 endpoint 层事件：
-
-| 事件 | 现象 | 处理 |
-|---|---|---|
-| USB 断连 / 拔出 | endpoint fd 上 I/O 返回 `-ESHUTDOWN` / `-ECONNRESET` | 标记通道失效，取消所有在途 iocb，通知上层重连 |
-| endpoint 未使能 | host 尚未 set_configuration，读写返回 `-ENODEV` | 等待 functionfs `ep0` 上报 `FUNCTIONFS_ENABLE` 事件后再启动收发 |
-| 传输被 halt/stall | 某 iocb 返回错误 | 清 halt（`FUNCTIONFS_CLEARHALT`），重挂该 iocb |
-| io_submit 返回 EAGAIN | AIO 上下文事件槽满 | 退避重试，或据此判定 ring 已满向上层背压 |
-| 短包 (short packet) | RX `res < block_size` | 正常情况——把实际长度交给上层，由上层（聚合层）按 TLV 判断边界 |
-
-**ep0 控制事件循环**：除了数据 endpoint，传输层还需监听 `ep0` 的 functionfs 事件（`BIND` / `UNBIND` / `ENABLE` / `DISABLE` / `SETUP`），驱动整个 function 的生命周期。数据通道的启停必须跟随 `ENABLE`/`DISABLE`，否则会对未就绪的 endpoint 提交 I/O 而报错。
-
----
-
-## 八、初始化流程
-
-```
-1. 挂载 functionfs：mount -t functionfs stick /dev/ffs
-2. 打开 ep0，写入 descriptors + strings
-      → 定义两个 bulk endpoint：ep1(4KB msg)、ep2(1MB pkt)
-3. 等待 ep0 上报 FUNCTIONFS_BIND / FUNCTIONFS_ENABLE
-4. 打开 ep1、ep2 endpoint fd
-5. io_setup(MAX_EVENTS, &ctx)  创建共享 AIO 上下文
-6. 为每条通道分配 TX/RX iocb ring 及关联 buffer 池
-7. RX ring 全部预挂起 iocb（进入接收就绪）
-8. 启动 event_loop 收割线程
-9. 向上层（聚合层）暴露 tx_submit / rx_complete 回调接口
-```
-
----
-
-## 九、与上层的接口契约（小结）
-
-传输层向聚合层暴露的最小接口：
-
-```
-tx_submit(channel, buf, len)      → 异步提交发送，ring 满返回 EAGAIN
-tx_complete(channel, buf)         ← 发送完成回调，buf 可复用
-rx_complete(channel, buf, len)    ← 收到一个 block 回调（len 为实际长度）
-rx_provide_buffer(channel)        → 上层提供空闲 RX buffer 供补挂 iocb
-```
-
-**职责边界一句话**：
-
-> 传输层只保证"定长 block 高并发、可靠地上下总线，ring 尽量不空档"；至于 block 里怎么拼包/拆包（聚合层）、发多快才不撑爆对端（流控层），传输层一概不管——**它是一根又粗又直的管子，粗靠深队列，直靠不掺业务逻辑。**
+| 场景 | 逻辑线态 (D+, D-) | 物理电压 | Host 是否可识别重新插入 | 备注 |
+| :--- | :--- | :--- | :--- | :--- |
+| **正常 FS 枚举** | `1, 0` (J态) | 3.3V | N/A | Host 检测到 3.3V 开始枚举 |
+| **正常 HS 工作** | `1, 0` (J态) | 400mV | N/A | 枚举成功后切换至 HS 模式 |
+| **Host 主动 Suspend** | `1, 0` (J态) | 400mV | N/A | 等待 Host Resume |
+| **Device 拔出 (无修复)** | `1, 0` (J态) | 400mV | ❌ 否 | 400mV 无法触发 Host 连接中断 |
+| **Device 拔出 (PHY 修复)** | `1, 0` (J态) | **3.3V** (强制恢复) | ✅ 是 | 恢复为 FS 电平，Host 可正常识别 |
