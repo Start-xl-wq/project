@@ -23,7 +23,7 @@
   "githubCopilotAccessToken": "",
   "githubCopilotToken": "",
   "githubCopilotTokenExpiresAt": 0,
-  "defaultChainType": "llm_chain",
+  "defaultChainType": "copilot_plus",
   "defaultModelKey": "gpt-5.4-mini|3rd party (openai-format)",
   "embeddingModelKey": "openai/text-embedding-3-small|openrouterai",
   "temperature": 0.1,
@@ -80,7 +80,7 @@
     {
       "name": "gpt-5.5",
       "provider": "openai",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "core": true,
       "capabilities": [
@@ -91,7 +91,7 @@
     {
       "name": "gpt-5.4-mini",
       "provider": "openai",
-      "enabled": true,
+      "enabled": false,
       "isBuiltIn": true,
       "core": true,
       "capabilities": [
