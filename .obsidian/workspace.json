@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/DWC3/USB DWC3 学习路线笔记.md",
+                "file": "USB/临时wiki.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "USB DWC3 学习路线笔记"
+              "title": "临时wiki"
             }
           }
         ]
@@ -193,8 +193,9 @@
       "copilot:Open Copilot Chat": false
     }
   },
-  "active": "c024a5ad2b847381",
+  "active": "85d6534de8323b9d",
   "lastOpenFiles": [
+    "USB/DWC3/USB DWC3 学习路线笔记.md",
     "copilot/copilot-conversations/分析一下@20260804_144358.md",
     "copilot/copilot-conversations",
     "copilot",
@@ -207,7 +208,6 @@
     "USB/临时wiki.md",
     "USB/基本概念",
     "USB/休眠唤醒",
-    "USB/DWC3/USB DWC3 学习路线笔记.md",
     "copilot/copilot-custom-prompts/Clip Web Page.md",
     "copilot/copilot-custom-prompts/Clip YouTube Transcript.md",
     "copilot/copilot-custom-prompts/Rewrite as tweet thread.md",

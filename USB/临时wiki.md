@@ -1,106 +1,187 @@
-以下为重新输出的完整 Wiki 文档：
+# ZC 通道数据面收发时序
 
-***
+本文补全 ZC 通道数据流动的动态视角：一次 D2H（device → host）大块传输，从业务模块提交到对端业务模块收齐，端到端各环节如何流水推进。
 
-# USB Device 拔出重插无法枚举问题分析与 PHY 电平恢复机制
+---
 
-## 1. 背景
+## 1. 概览
 
-| 项目 | 说明 |
-| :--- | :--- |
-| Host | Windows PC |
-| Device | 自研 Linux SoC（USB Device 模式） |
-| 工作速率 | High Speed（HS, 480Mbps） |
-| 问题 | Device 主动拔出后重新插入，Host 无法识别、不发起枚举 |
-| 解决方式 | PHY 层私有机制：拔出后自动恢复 FS 电平 |
+ZC 通道承载 402 MB/s 的核心在于**两端都保持多笔传输在途**，让 DMA 引擎永不空转：
 
-## 2. 关键概念与电平标准
+- Device 侧：**3 笔 request 在途**（受 DWC3 TRB ring 约束）
+- Host 侧：**4 个 URB 在途**（受回调时延约束）
+- wire 上是裸 payload 字节流，无 header，Host 侧靠**字节计数收敛**判定收齐。
 
-| 术语 | D+ / D- 逻辑 | 物理电平 | 说明 |
-| :--- | :--- | :--- | :--- |
-| FS J 态 | `1, 0` | 3.3V | 设备插入后、枚举初期状态，D+ 经 1.5kΩ 上拉 |
-| HS J 态 | `1, 0` | 400mV | HS 握手成功后的工作电平 |
-| SE0 | `0, 0` | 0V | 断开/复位信号 |
-| SOF | — | — | Host 每 125μs（HS）发送的帧起始包，停发是 Suspend 的判据 |
-| Chirp 握手 | — | — | FS 枚举阶段进行的 HS 协商，成功后切换到 400mV 电平 |
+前提：本次传输的元信息（传输 id、总字节数、SG 颗粒）已由 SERVICE 通道**前置协商**完成，故 ZC wire 可彻底裸奔。
 
-**Host 连接检测原理**：Host 端 D+/D- 各有 15kΩ 下拉，需检测到 D+ 被上拉至 2.0V 以上（典型 3.3V）才判定"设备插入"。**400mV 远低于该阈值。**
+---
 
-## 3. 正常枚举流程（基线）
+## 2. 端到端时序
 
-1. **插入**：Device 插入 Host，D+/D- 呈现 `1, 0`（J 态），D+ 电平为 **3.3V**（FS 电平）。
-2. **识别**：Host 检测到 D+ 3.3V 跳变，判定为 FS 设备插入，发起复位并开始在 FS 模式下枚举。
-3. **HS 切换**：枚举过程中完成 Chirp 握手，双方切换至 HS 模式。
-4. **HS 工作态**：线态逻辑仍为 `1, 0`，但 D+ 电平从 3.3V 降至 **400mV**（HS 电平）。
+Text
 
-## 4. 场景一：Host 主动 Suspend（正常）
+ Device业务      Device驱动          USB线(SS)          Host驱动        Host业务
 
-1. Host 停发 SOF。
-2. Device 检测到总线空闲超时，触发 **Suspend 事件**。
-3. 线路保持挂起前状态：逻辑 `1, 0`，电平维持 **400mV**。
-4. 等待 Host 主动 Resume，恢复正常通信。
+    │                │                                    │              │
 
-> ✅ 该场景行为符合 USB 2.0 协议，无异常。
+    │                │        ── 传输前经 SERVICE 协商 id/总长/颗粒 ──    │
 
-## 5. 场景二：Device 主动拔出（问题场景）
+    │                │                                    │              │
 
-### 5.1 现象
+    │ zc_submit      │                                    │ 预挂4个URB   │
 
-Device 拔出后重新插入 Host，Host 无反应，不发起枚举。
+    │  (id,len,sg)   │                                    │◄─ zc_recv ───┤
 
-### 5.2 根因分析
+    ├───────────────►│ 建 SG request                      │   (id,sg)    │
 
-1. **正常协议行为**：拔出应同时触发 `Suspend`（SOF 丢失）与 `Disconnect`（线态进入 SE0）两个事件，设备回到未连接态。
-2. **当前 IP 局限**：Device 端 USB IP 设计上**没有 pad 接出**，无法触发 `Disconnect` 事件，只能因 SOF 丢失触发 `Suspend`。
-3. **错误状态保持**：Device 停留在"假 Suspend"状态——逻辑 `1, 0`，电平维持 HS 模式的 **400mV**，PHY 未恢复 FS 电平。
+    │                │ 拆成 request[0..2]                 │              │
 
-### 5.3 重新插入失败原因
+    │                ├─ ep_queue req0 ═══ burst16 ═══════►│ URB0 complete│
 
-* 重新插入时，Device 的 D+ 电平为 **400mV**。
-* Host 连接检测要求 D+ 上拉至 2.0V 以上（见第 2 节）。
-* 400mV 低于检测阈值 → Host 判定无设备插入 → 不发起枚举。
+    │                ├─ ep_queue req1 ═══ burst16 ═══════►│ URB1 complete│
 
-## 6. 解决方案：PHY 自动电平恢复机制（私有方案）
+    │                ├─ ep_queue req2 ═══ burst16 ═══════►│ URB2 complete│
 
-### 6.1 原理
+    │                │  ↑ 3笔在途, DMA不空转   ↓          │  ↓字节计数++ │
 
-在 PHY 层增加拔出检测与电平恢复逻辑，绕开 IP 无法触发 Disconnect 的缺陷：
+    │                │◄ req0 giveback ─ 补 req3 ─────────►│ URB0 重提交  │
 
-1. **拔出检测**：PHY 硬件检测到拔出动作。
-2. **电平恢复**：PHY 自动将 D+ 电平从 **400mV 恢复至 3.3V**（即退出 HS 状态，恢复 FS 上拉）。
-3. **重新插入**：Host 检测到 D+ 3.3V 跳变，正常触发标准枚举流程（回到第 3 节）。
+    │                │◄ req1 giveback ─ 补 req4 ─────────►│ URB1 重提交  │
 
-### 6.2 修复后流程
+    │                │        ……持续流水……               │  ……         │
 
-```
-拔出 → SOF 丢失 → Suspend 事件
-                ↘ PHY 检测拔出 → D+ 电平 400mV → 3.3V
-重新插入 → Host 检测到 3.3V → 正常 FS 枚举 → Chirp → HS 工作
-```
+    │                │◄ 末笔 giveback                     │ 计数==总长   │
 
-## 7. 全场景状态对比
+    │◄── done 回调 ──┤                                    ├── recv 回调─►│
 
-| 场景 | 逻辑线态 | D+ 电平 | Host 可识别重插 | 备注 |
-| :--- | :--- | :--- | :--- | :--- |
-| 正常插入枚举（FS 阶段） | `1, 0` | 3.3V | — | Host 检测 3.3V 触发枚举 |
-| HS 正常工作 | `1, 0` | 400mV | — | Chirp 后切换 |
-| Host 主动 Suspend | `1, 0` | 400mV | — | 等待 Host Resume |
-| Device 拔出（无修复） | `1, 0` | 400mV | ❌ | 低于 Host 检测阈值，无法枚举 |
-| Device 拔出（PHY 修复） | `1, 0` | **3.3V** | ✅ | 恢复 FS 电平，可正常枚举 |
+    │  (id, status)  │                                    │  (id,收齐)   │
 
-## 8. 逻辑闭环确认
+---
 
-| 逻辑链 | 闭环状态 |
-| :--- | :--- |
-| 正常枚举（3.3V → Chirp → 400mV） | ✅ 闭环，符合 USB 2.0 协议 |
-| Host Suspend（停 SOF → 保持 400mV → 待 Resume） | ✅ 闭环，符合 USB 2.0 协议 |
-| 拔出异常（无 Disconnect → 保持 400mV → 重插 Host 不识别） | ✅ 闭环，现象与机制互相印证 |
-| PHY 修复（检测拔出 → 恢复 3.3V → 重插正常枚举） | ⚠️ 基本闭环，有一处待确认 |
+## 3. Device 侧：提交与流水补充
 
-### 待确认项
+### 3.1 zc_submit 入口
 
-> **PHY 检测拔出的信号来源**：IP 无 pad 接出、无法产生 Disconnect 事件的前提下，PHY 依据什么判定拔出发生？需确认具体机制（如 VBUS 掉电检测、PHY 内部独立检测引脚等），确认后逻辑链完全闭环。建议在本文档第 6 节补充该机制说明。
+业务模块调用 `zc_submit(id, len, sg)`，传入一段 scatter-gather buffer。驱动不拷贝 payload，直接把 SG 挂到 USB request 的 `sg / num_sgs` 上，交由 DWC3 做 SG-DMA。
 
-***
+### 3.2 拆分与在途窗口
 
-如需调整格式（如适配 Confluence/内部 Wiki 模板）、补充时序图或电路框图占位，或已确认 PHY 拔出检测机制需要我写入文档，请告诉我。
+一次大传输拆成多笔 request，**始终保持 3 笔在途**：
+
+Text
+
+初始:  queue req0, req1, req2        (在途=3)
+
+       ┌─────────────────────────────┐
+
+每当:  │ reqN complete(giveback)      │
+
+       │   → 若还有剩余数据           │
+
+       │   → 立即 queue req(N+3)      │  维持在途=3
+
+       └─────────────────────────────┘
+
+末尾:  剩余数据不足则不再补, 在途逐笔收敛到 0
+
+3 笔是 DWC3 TRB ring 深度与 SG 段数共同决定的经验窗口：太少则 giveback 到补队之间出现空窗，太多则 ring 溢出。
+
+### 3.3 giveback 在原子上下文
+
+request 完成回调（giveback）运行在**原子上下文**，不能睡眠。因此补队逻辑必须是纯非阻塞操作：只做 `usb_ep_queue`（本身可在原子上下文调用），不做任何分配/等待。若需要分配新 request，从**预分配的 request 池**取，不在回调里 kmalloc。
+
+### 3.4 完成通知
+
+末笔 giveback 后，驱动通过 `done 回调`通知业务模块本次 `id` 传输完成及最终 status。
+
+---
+
+## 4. Host 侧：预挂 URB 与字节计数收敛
+
+### 4.1 zc_recv 入口
+
+Host 业务调用 `zc_recv(id, sg)`，把接收 SG buffer 交给驱动。驱动**预先挂 4 个 URB**到 ZC IN 端点，全部挂到 anchor。
+
+### 4.2 为什么是 4 个而非 3 个
+
+Host 侧在途窗口受 URB complete 回调调度时延约束，比 Device 侧多 1 个作缓冲：
+
+Text
+
+Device 3笔 ── wire ── Host 4个URB
+
+在途窗口不对称: Host 多 1 个吸收回调调度抖动, 防接收侧空窗
+
+### 4.3 字节计数收敛
+
+wire 上无 header、无边界信号，Host 靠**累计收到的字节数**判定收齐：
+
+Text
+
+每个 URB complete:
+
+    received += urb->actual_length
+
+    把该 URB 数据落到 SG 对应偏移
+
+    if received < total:
+
+        重提交该 URB (维持在途=4)
+
+    else:
+
+        停止重提交, 触发 recv 回调(id, 收齐)
+
+- **total 来自 SERVICE 前置协商**，这是裸字节流能收敛的前提。
+- 收齐后剩余在途 URB 自然回落，无需额外信号。
+
+### 4.4 短包与末尾对齐
+
+末笔数据长度通常不是 MPS 整数倍，会产生一个短包（short packet），xHCI 据此正常结束该 URB。字节计数在短包上正好补齐到 total，收敛点与短包点一致。
+
+---
+
+## 5. 两侧在途窗口对照
+
+||Device 侧|Host 侧|
+|---|---|---|
+|在途单位|request|URB|
+|在途数量|3|4|
+|约束来源|DWC3 TRB ring 深度|complete 回调调度时延|
+|补队时机|giveback 回调内|complete 回调内|
+|补队上下文|原子（不能睡眠）|原子（不能睡眠）|
+|收敛判据|剩余数据耗尽|字节计数 == total|
+
+---
+
+## 6. 流水为什么能压满带宽
+
+Text
+
+朴素单笔:  queue ─ 传 ─ giveback ─(空窗)─ queue ─ 传 ─ ……
+
+                              ↑ DMA 空转, 带宽掉到 ~200 MB/s
+
+3/4 笔流水:  ═══════════════════════════════════════
+
+             传输连续无缝, giveback 与下一笔传输重叠
+
+                              ↑ DMA 不空转, 配 burst=16 → 402 MB/s
+
+关键三点叠加：
+
+1. **多笔在途**：giveback 与下一笔传输时间重叠，消除软件空窗。
+2. **SG-DMA 直达**：payload 零拷贝，无 CPU 搬运瓶颈。
+3. **SS burst=16**：单次链路握手连发 16 包，摊薄协议开销。
+
+---
+
+## 7. 异常打断（详见错误路径文档）
+
+传输途中若发生 ABORT / 超时 / 断链：
+
+- Device 侧：`usb_ep_disable` 强制 giveback 所有在途 request，业务收到 done(status=aborted)。
+- Host 侧：anchor 统一 kill 所有在途 URB，业务收到 recv(status=aborted)。
+- 两侧字节计数与在途窗口一并复位，通道回到可重新协商状态。
+
+ABORT 信令本身走 SERVICE 通道，即使 ZC 满负荷也能即时抵达 —— 这正是三通道分离的价值。
