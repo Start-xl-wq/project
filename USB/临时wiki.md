@@ -1,187 +1,158 @@
-# ZC 通道数据面收发时序
+# SERVICE / DATA 通道数据面收发时序
 
-本文补全 ZC 通道数据流动的动态视角：一次 D2H（device → host）大块传输，从业务模块提交到对端业务模块收齐，端到端各环节如何流水推进。
-
----
-
-## 1. 概览
-
-ZC 通道承载 402 MB/s 的核心在于**两端都保持多笔传输在途**，让 DMA 引擎永不空转：
-
-- Device 侧：**3 笔 request 在途**（受 DWC3 TRB ring 约束）
-- Host 侧：**4 个 URB 在途**（受回调时延约束）
-- wire 上是裸 payload 字节流，无 header，Host 侧靠**字节计数收敛**判定收齐。
-
-前提：本次传输的元信息（传输 id、总字节数、SG 颗粒）已由 SERVICE 通道**前置协商**完成，故 ZC wire 可彻底裸奔。
+前一篇讲了 ZC 通道（裸字节流 + SG-DMA + 字节计数收敛）。本文讲 SERVICE 与 DATA 两条**帧通道**的数据面。它们共用一套帧收发机制，比 ZC 简单得多：**32B header 自描述 + copy 语义 + 单帧一笔传输**。
 
 ---
 
-## 2. 端到端时序
+## 1. 与 ZC 的本质区别
 
-Text
-
- Device业务      Device驱动          USB线(SS)          Host驱动        Host业务
-
-    │                │                                    │              │
-
-    │                │        ── 传输前经 SERVICE 协商 id/总长/颗粒 ──    │
-
-    │                │                                    │              │
-
-    │ zc_submit      │                                    │ 预挂4个URB   │
-
-    │  (id,len,sg)   │                                    │◄─ zc_recv ───┤
-
-    ├───────────────►│ 建 SG request                      │   (id,sg)    │
-
-    │                │ 拆成 request[0..2]                 │              │
-
-    │                ├─ ep_queue req0 ═══ burst16 ═══════►│ URB0 complete│
-
-    │                ├─ ep_queue req1 ═══ burst16 ═══════►│ URB1 complete│
-
-    │                ├─ ep_queue req2 ═══ burst16 ═══════►│ URB2 complete│
-
-    │                │  ↑ 3笔在途, DMA不空转   ↓          │  ↓字节计数++ │
-
-    │                │◄ req0 giveback ─ 补 req3 ─────────►│ URB0 重提交  │
-
-    │                │◄ req1 giveback ─ 补 req4 ─────────►│ URB1 重提交  │
-
-    │                │        ……持续流水……               │  ……         │
-
-    │                │◄ 末笔 giveback                     │ 计数==总长   │
-
-    │◄── done 回调 ──┤                                    ├── recv 回调─►│
-
-    │  (id, status)  │                                    │  (id,收齐)   │
-
----
-
-## 3. Device 侧：提交与流水补充
-
-### 3.1 zc_submit 入口
-
-业务模块调用 `zc_submit(id, len, sg)`，传入一段 scatter-gather buffer。驱动不拷贝 payload，直接把 SG 挂到 USB request 的 `sg / num_sgs` 上，交由 DWC3 做 SG-DMA。
-
-### 3.2 拆分与在途窗口
-
-一次大传输拆成多笔 request，**始终保持 3 笔在途**：
-
-Text
-
-初始:  queue req0, req1, req2        (在途=3)
-
-       ┌─────────────────────────────┐
-
-每当:  │ reqN complete(giveback)      │
-
-       │   → 若还有剩余数据           │
-
-       │   → 立即 queue req(N+3)      │  维持在途=3
-
-       └─────────────────────────────┘
-
-末尾:  剩余数据不足则不再补, 在途逐笔收敛到 0
-
-3 笔是 DWC3 TRB ring 深度与 SG 段数共同决定的经验窗口：太少则 giveback 到补队之间出现空窗，太多则 ring 溢出。
-
-### 3.3 giveback 在原子上下文
-
-request 完成回调（giveback）运行在**原子上下文**，不能睡眠。因此补队逻辑必须是纯非阻塞操作：只做 `usb_ep_queue`（本身可在原子上下文调用），不做任何分配/等待。若需要分配新 request，从**预分配的 request 池**取，不在回调里 kmalloc。
-
-### 3.4 完成通知
-
-末笔 giveback 后，驱动通过 `done 回调`通知业务模块本次 `id` 传输完成及最终 status。
-
----
-
-## 4. Host 侧：预挂 URB 与字节计数收敛
-
-### 4.1 zc_recv 入口
-
-Host 业务调用 `zc_recv(id, sg)`，把接收 SG buffer 交给驱动。驱动**预先挂 4 个 URB**到 ZC IN 端点，全部挂到 anchor。
-
-### 4.2 为什么是 4 个而非 3 个
-
-Host 侧在途窗口受 URB complete 回调调度时延约束，比 Device 侧多 1 个作缓冲：
-
-Text
-
-Device 3笔 ── wire ── Host 4个URB
-
-在途窗口不对称: Host 多 1 个吸收回调调度抖动, 防接收侧空窗
-
-### 4.3 字节计数收敛
-
-wire 上无 header、无边界信号，Host 靠**累计收到的字节数**判定收齐：
-
-Text
-
-每个 URB complete:
-
-    received += urb->actual_length
-
-    把该 URB 数据落到 SG 对应偏移
-
-    if received < total:
-
-        重提交该 URB (维持在途=4)
-
-    else:
-
-        停止重提交, 触发 recv 回调(id, 收齐)
-
-- **total 来自 SERVICE 前置协商**，这是裸字节流能收敛的前提。
-- 收齐后剩余在途 URB 自然回落，无需额外信号。
-
-### 4.4 短包与末尾对齐
-
-末笔数据长度通常不是 MPS 整数倍，会产生一个短包（short packet），xHCI 据此正常结束该 URB。字节计数在短包上正好补齐到 total，收敛点与短包点一致。
-
----
-
-## 5. 两侧在途窗口对照
-
-||Device 侧|Host 侧|
+||ZC 通道|SERVICE / DATA 通道|
 |---|---|---|
-|在途单位|request|URB|
-|在途数量|3|4|
-|约束来源|DWC3 TRB ring 深度|complete 回调调度时延|
-|补队时机|giveback 回调内|complete 回调内|
-|补队上下文|原子（不能睡眠）|原子（不能睡眠）|
-|收敛判据|剩余数据耗尽|字节计数 == total|
+|wire 格式|裸 payload 字节流|32B header + payload|
+|拷贝语义|zero-copy，SG-DMA 直达|copy，进出 driver buffer|
+|收敛判据|字节计数 == 协商总长|header 自带长度，一帧即一个单位|
+|在途流水|3/4 笔|单笔（无需流水）|
+|前置协商|需要（元信息走 SERVICE）|不需要（header 自描述）|
+|用途|大数据流|控制 / 协商 / 小帧|
+
+一句话：**帧通道每次收发就是一个自包含的帧，header 说清楚这一帧多长、是什么，无需任何前置状态。** 所以实现简单，不追求带宽。
 
 ---
 
-## 6. 流水为什么能压满带宽
+## 2. wire 格式：32B header + payload
 
 Text
 
-朴素单笔:  queue ─ 传 ─ giveback ─(空窗)─ queue ─ 传 ─ ……
+┌──────────────────────────────┬─────────────────────┐
 
-                              ↑ DMA 空转, 带宽掉到 ~200 MB/s
+│      32B header               │      payload        │
 
-3/4 笔流水:  ═══════════════════════════════════════
+├──────────────────────────────┼─────────────────────┤
 
-             传输连续无缝, giveback 与下一笔传输重叠
+│ magic  | type | flags | len   │   业务数据          │
 
-                              ↑ DMA 不空转, 配 burst=16 → 402 MB/s
+│ (对齐/校验字段, 共32字节)     │   (len 字节)        │
 
-关键三点叠加：
+└──────────────────────────────┴─────────────────────┘
 
-1. **多笔在途**：giveback 与下一笔传输时间重叠，消除软件空窗。
-2. **SG-DMA 直达**：payload 零拷贝，无 CPU 搬运瓶颈。
-3. **SS burst=16**：单次链路握手连发 16 包，摊薄协议开销。
+        自描述, 接收端读 header 即知整帧边界
+
+- `type`：区分 CTRL / DBG / CAPS / ABORT 等（SERVICE 通道），或 DATA 帧类型。
+- `len`：payload 字节数，接收端据此知道整帧多长。
+- header 与 payload 在同一笔传输里连续发出，接收端一次收进 driver buffer 后就地解析。
 
 ---
 
-## 7. 异常打断（详见错误路径文档）
+## 3. 发送时序（以 device → host 为例）
 
-传输途中若发生 ABORT / 超时 / 断链：
+Text
 
-- Device 侧：`usb_ep_disable` 强制 giveback 所有在途 request，业务收到 done(status=aborted)。
-- Host 侧：anchor 统一 kill 所有在途 URB，业务收到 recv(status=aborted)。
-- 两侧字节计数与在途窗口一并复位，通道回到可重新协商状态。
+业务模块          Driver               USB线            对端Driver      对端业务
 
-ABORT 信令本身走 SERVICE 通道，即使 ZC 满负荷也能即时抵达 —— 这正是三通道分离的价值。
+   │ send_frame     │                                    │              │
+
+   │ (type,buf,len) │                                    │              │
+
+   ├───────────────►│ 取 driver txbuf                    │ 预挂 rx URB  │
+
+   │                │ 填 32B header                      │              │
+
+   │                │ memcpy payload → txbuf             │              │
+
+   │                ├─ ep_queue (header+payload一笔) ───►│ complete     │
+
+   │                │◄─ giveback ─                       ├─ 解析 header │
+
+   │◄── done ───────┤                                    ├─ memcpy出   │
+
+   │                │                                    ├── recv 回调─►│
+
+**发送三步，无流水：**
+
+1. 从 driver 的发送 buffer 取一块，填好 32B header（type / len / flags）。
+2. `memcpy` 业务 payload 进 buffer（copy 语义，这里就是与 ZC 最大的不同）。
+3. `usb_ep_queue` 一笔发出（header 与 payload 连续）。giveback 后通知业务 done。
+
+因为帧通道流量小、不追吞吐，**单笔发送即可，不做多笔在途流水**。
+
+---
+
+## 4. 接收时序
+
+Text
+
+对端Driver 预挂 rx request/URB, 等待入帧
+
+        │
+
+        ▼
+
+   一笔传输到达 (header + payload)
+
+        │
+
+        ├─ 读 header.magic 校验
+
+        ├─ 读 header.type   分派
+
+        ├─ 读 header.len    取 payload
+
+        ├─ memcpy payload → 业务 buffer (或直接回调传指针)
+
+        ├─ 触发 recv 回调(type, buf, len)
+
+        │
+
+        └─ 重新预挂 rx request/URB, 等下一帧
+
+**接收要点：**
+
+- 接收端**常驻预挂**收 request/URB，收到一帧、解析、回调、再补挂，形成常开的收帧环。
+- 一笔传输 = 一个完整帧（header + payload 一起到），无需跨笔拼接。
+- 按 `header.type` 分派：SERVICE 通道据此区分 CTRL / CAPS / ABORT 等控制语义。
+
+---
+
+## 5. 为什么帧通道能这么简单
+
+|简化点|原因|
+|---|---|
+|无前置协商|header 自描述，每帧自包含，接收端无需预知长度|
+|无字节计数收敛|`header.len` 直接给出边界，一笔到齐|
+|无多笔流水|流量小、不追带宽，单笔够用|
+|copy 语义|帧小，memcpy 开销可忽略，换取业务 buffer 生命周期解耦|
+
+帧通道用**一点点拷贝开销和自描述 header**，换来了极简的实现和零协商状态。ZC 则相反：牺牲实现复杂度（前置协商 + 字节计数 + 多笔流水 + SG-DMA），换取 402 MB/s。两者定位互补。
+
+---
+
+## 6. SERVICE 与 DATA 的差异
+
+两条通道机制完全相同，仅**用途和端点不同**：
+
+||SERVICE 通道|DATA 通道|
+|---|---|---|
+|端点|SERVICE IN/OUT|DATA IN/OUT|
+|header.type|CTRL / DBG / CAPS / ABORT|常规数据帧类型|
+|时延要求|敏感（控制信令）|一般|
+|关键作用|承载 ZC 前置协商、ABORT，满负荷时仍可达|常规可靠小帧收发|
+
+SERVICE 独占一对端点，正是为了让控制信令**不被 DATA 或 ZC 的大流量阻塞** —— 这是三通道分离的核心价值。
+
+---
+
+## 7. 三通道数据面小结
+
+Text
+
+SERVICE ┐
+
+        ├─ 32B header + copy + 单笔 ── 简单, 自描述, 时延敏感
+
+DATA   ─┘
+
+ZC ─────── 裸字节流 + SG-DMA + 3/4笔流水 ── 复杂, 高带宽
+
+- **帧通道（SERVICE/DATA）**：header 自描述，一笔一帧，copy 语义，实现极简。
+- **ZC 通道**：裸奔 + 流水 + 直达 DMA，实现复杂，专供 402 MB/s。
+- 三者共享端点/生命周期层，各走独立端点对，互不阻塞。
