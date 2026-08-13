@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
+                "file": "USB/临时wiki.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "USB驱动开发笔记（一）：物理链路建立与电气协商"
+              "title": "临时wiki"
             }
           }
         ]
@@ -195,6 +195,7 @@
   },
   "active": "85d6534de8323b9d",
   "lastOpenFiles": [
+    "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
     "USB/休眠唤醒/USB Suspend  Resume  Wakeup 场景说明.md",
     "USB/基本概念/USB 2.0 & USB 3.x 链路电源状态.md",
     "USB/临时wiki.md",
@@ -225,7 +226,6 @@
     "copilot/copilot-custom-prompts/Translate to Chinese.md",
     "copilot/copilot-custom-prompts/Fix grammar and spelling.md",
     "copilot/copilot-custom-prompts",
-    "USB/验证/Ax615.md",
     "USB/验证",
     "USB/Class",
     "USB/Ax525调试记录/acm",

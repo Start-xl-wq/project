@@ -1,900 +1,380 @@
-# USB 2.0 / USB 3.x 链路电源状态 Wiki
+# USB 3.x 休眠与唤醒逻辑
 
-> 本文只讨论 USB 协议定义的链路电源状态：USB 2.0 的 `L0/L1/L2/L3` 和 USB 3.x 的 `U0/U1/U2/U3`。
-> 不讨论 Linux、DWC3、gadget 回调、runtime PM、系统休眠等软件电源管理机制。
+## 1. 概述
+
+本文主要梳理 USB 3.x 的以下流程：
+
+- 设备插入与拔出检测
+- U1/U2 链路低功耗
+- U3 Suspend
+- Host Resume
+- Device Remote Wake
+
+链路训练过程不做深入展开，仅简化描述为：
+
+```text
+Rx.Detect
+    -> Polling / LFPS
+    -> Equalization
+    -> Configuration
+    -> U0
+```
 
 ---
 
-## 1. 状态总览
+## 2. USB 3.x 主要链路状态
 
-### 1.1 USB 2.0
-
-| 状态 | 名称 | 状态含义 | 正常传输 | 保持逻辑连接 |
-|---|---|---|---|---|
-| `L0` | On | 总线正常工作 | 是 | 是 |
-| `L1` | Sleep | USB 2.0 LPM 快速低功耗状态 | 否 | 是 |
-| `L2` | Suspend | USB 2.0 传统挂起状态 | 否 | 是 |
-| `L3` | Off | 总线不可工作，通常对应断开或掉电 | 否 | 否 |
-
-### 1.2 USB 3.x
-
-| 状态 | 名称 | 状态含义 | 正常传输 | 保持逻辑连接 |
-|---|---|---|---|---|
-| `U0` | Active | SuperSpeed 链路正常工作 | 是 | 是 |
-| `U1` | Standby | 低退出延迟的浅层低功耗状态 | 否 | 是 |
-| `U2` | Standby | 更深的链路低功耗状态 | 否 | 是 |
-| `U3` | Suspend | SuperSpeed 链路挂起状态 | 否 | 是 |
-
-一般关系：
-
-```text
-退出延迟：U0 < U1 < U2 < U3
-节能深度：U0 < U1 < U2 < U3
-```
-
-这里描述的是设计目标。PHY 内部实际关闭哪些电路，由具体硬件实现决定。
-
----
-
-# 2. USB 2.0 L 状态
-
-## 2.1 L0：On
-
-`L0` 是 USB 2.0 的正常工作状态。
-
-主要特征：
-
-- Host 正常调度 USB 事务；
-- 总线上存在 SOF、数据包和握手包；
-- Control、Bulk、Interrupt 和 Isochronous 传输可以正常执行；
-- 设备地址和配置状态有效；
-- Endpoint 可以正常收发数据。
-
-```text
-总线正常活动
-    ↓
-   L0
-    ↓
-正常USB事务
-```
-
-`L0` 是其他 USB 2.0 低功耗状态恢复后的目标活动状态。
-
----
-
-## 2.2 L1：Sleep
-
-`L1` 是 USB 2.0 Link Power Management，简称 LPM，定义的快速低功耗状态。
-
-与传统 `L2 Suspend` 相比，`L1` 的目标是：
-
-- 更快进入；
-- 更快退出；
-- 适合较短的总线空闲时间；
-- 在不丢失逻辑连接的情况下节省功耗。
-
-### 进入 L1
-
-L1 由 Host 通过 LPM transaction 发起。
-
-简化流程：
-
-```text
-L0
- ↓
-Host发送LPM transaction
- ↓
-Device响应
- ↓
-Host和Device进入L1
-```
-
-设备可根据自身状态对 LPM 请求作出相应响应，因此 L1 是一种经过协议交互的低功耗状态。
-
-### L1 中保留的内容
-
-通常需要保持：
-
-- USB 逻辑连接；
-- Device Address；
-- Configuration；
-- Interface 和 Endpoint 配置；
-- 必要的协议状态；
-- 线路活动检测能力；
-- 从 L1 返回 L0 的能力。
-
-### L1 的退出
-
-L1 可因 Host 发起的总线活动退出。满足相关条件时，也可以通过远程唤醒机制退出。
-
-```text
-L1
- ↓
-检测到合法退出信号
- ↓
-恢复USB2活动能力
- ↓
-L0
-```
-
-退出 L1 后：
-
-- 不需要重新连接；
-- 不需要重新分配地址；
-- 不需要重新执行完整枚举。
-
-### HIRD 与 BESL
-
-USB 2.0 LPM 使用相关参数描述 L1 退出行为，例如：
-
-| 参数 | 含义 |
+| 状态 | 说明 |
 |---|---|
-| `HIRD` | Host Initiated Resume Duration |
-| `BESL` | Best Effort Service Latency |
+| U0 | 正常工作状态，可以进行数据传输 |
+| U1 | 浅度链路低功耗状态，恢复延迟较小 |
+| U2 | 深度链路低功耗状态，恢复延迟大于 U1 |
+| U3 | 最深的链路低功耗状态，通常对应 USB Suspend |
+| SS.Inactive | 链路异常或训练失败状态，不属于正常低功耗状态 |
 
-这些参数用于描述设备从 L1 恢复服务能力的时间要求。
-
-> L1 并不规定“PLL 必须开启”或“某个时钟必须保留”。规范关注的是外部链路行为和退出延迟，内部电源实现由 PHY 和芯片设计决定。
-
----
-
-## 2.3 L2：Suspend
-
-`L2` 是 USB 2.0 的传统 Suspend 状态。
-
-### 进入 L2
-
-Host 停止正常总线活动后，设备检测到总线持续处于空闲状态，从而识别 Suspend 条件。
-
-简化过程：
-
-```text
-L0
- ↓
-Host停止SOF和普通USB事务
- ↓
-总线持续idle
- ↓
-Device检测到Suspend
- ↓
-L2
-```
-
-L2 不使用 L1 的 LPM transaction 协商机制。
-
-### L2 中保留的内容
-
-进入 L2 后，设备仍保持逻辑连接，通常需要保留：
-
-- Device Address；
-- Configuration；
-- Interface 设置；
-- Endpoint 配置；
-- Endpoint Halt 等协议状态；
-- 必要的设备功能上下文；
-- 总线状态检测能力。
-
-因此 `L2` 不是断开状态。
-
-### L2 中的硬件状态
-
-芯片通常可以关闭或降低以下部分的功耗：
-
-- USB 数据收发主路径；
-- PHY 高速逻辑；
-- PLL；
-- 非必要数字时钟；
-- 非必要内部电路。
-
-同时需要保留能够检测退出条件的电路，例如：
-
-- USB 线路状态检测；
-- VBUS 检测；
-- 必要的连接状态保持电路；
-- 必要的状态保存或 retention 电路。
-
-具体关闭范围不由 USB 协议统一规定。
-
-### L2 的退出
-
-```text
-L2
- ↓
-检测到Resume signaling
- ↓
-恢复PHY和链路能力
- ↓
-L0
-```
-
-正常从 L2 返回 L0 后：
-
-- USB 地址仍然有效；
-- Configuration 仍然有效；
-- 不需要重新枚举。
+> **说明：** U1/U2 是链路级低功耗状态，不等同于 USB Function Suspend。U3 通常与 USB Suspend 对应，但链路状态和设备功能状态在概念上仍有区别。
 
 ---
 
-## 2.4 L3：Off
+## 3. 插入检测
 
-`L3` 表示 USB 总线不再处于可工作的已连接状态。
+USB 3.x 的插入检测需要区分 Device 侧和 Host 侧。
 
-常见原因包括：
+### 3.1 Device 侧
 
-- 设备物理拔出；
+Device 主要通过 `VBUS Valid` 判断 Host 是否存在。
+
+基本流程如下：
+
+```text
+VBUS Valid
+    -> Device 判断 Host 已连接
+    -> 使能 SuperSpeed PHY
+    -> 打开 Rx Termination
+    -> 等待 Host 发起 Rx.Detect / Polling
+```
+
+VBUS 表示总线上存在 Host，同时决定 Device 是否允许连接到总线。
+
+### 3.2 Host 侧
+
+Host 是 VBUS 的提供者，因此不能通过 VBUS 判断 Device 是否插入。
+
+Host 主要通过 PHY 的 `Rx.Detect` 检测对端的 Receiver Termination。
+
+基本流程如下：
+
+```text
+Host 执行 Rx.Detect
+    -> 检测到 Device 的 Rx Termination
+    -> 进入 Polling
+    -> 完成链路训练
+    -> 进入 U0
+```
+
+### 3.3 Type-C 场景
+
+在 USB Type-C 场景下，物理插入还可以通过 `CC Attach` 检测。
+
+`CC Attach/Detach` 与 USB 3.x PHY 的 `Rx.Detect` 属于不同层面的机制：
+
+- CC 用于连接器和端口层面的连接检测；
+- Rx.Detect 用于 SuperSpeed 链路层面的对端检测。
+
+---
+
+## 4. 拔出检测
+
+拔出检测不能简单概括为同时依赖 PHY Detect 和 VBUS。Host 与 Device 的检测方式存在差异。
+
+### 4.1 Device 侧
+
+Device 可以通过以下信息判断连接断开：
+
 - VBUS 消失；
-- 上游端口关闭；
-- 设备掉电；
-- 设备移除连接指示；
-- 总线不再维持有效连接。
+- Type-C 场景下发生 CC Detach；
+- PHY 或链路状态异常；
+- 对端终端消失。
 
-### L3 与 L1/L2 的区别
+其中，`VBUS Loss` 是 Device 判断 Host 或 Hub 已不存在的重要依据。
 
-| 属性 | L1 | L2 | L3 |
-|---|---|---|---|
-| 逻辑连接 | 保持 | 保持 | 不保持 |
-| 地址和配置 | 保持 | 保持 | 通常不再有效 |
-| 返回活动状态 | 退出到 L0 | 恢复到 L0 | 通常需要重新连接 |
-| 是否需要重新枚举 | 否 | 否 | 通常需要 |
+### 4.2 Host 侧
 
-L3 的重点不是“更深一级的快速低功耗”，而是 USB 链路已经处于关闭或不可用状态。
+由于 Host 自身提供 VBUS，因此 VBUS 通常不能作为 Host 判断 Device 拔出的依据。
 
----
+Host 主要通过以下信息识别拔出：
 
-# 3. USB 3.x U 状态
+- PHY 检测到 Receiver Termination 消失；
+- 链路错误或 Recovery 失败；
+- Hub 或 Port 状态变化；
+- Type-C 场景下发生 CC Detach。
 
-## 3.1 U0：Active
+### 4.3 U3 状态下的拔出检测
 
-`U0` 是 USB 3.x SuperSpeed 链路的正常活动状态。
+U3 状态下没有正常的高速数据活动，因此不能依赖普通数据包判断连接是否存在。
 
-主要特征：
+系统需要保留必要的低功耗检测能力，并结合以下信息识别拔出：
 
-- 链路训练已经完成；
-- SuperSpeed Packet 可以正常发送和接收；
-- Link Command 可以正常交换；
-- Endpoint 数据传输可以正常进行；
-- 链路处于完整工作状态。
+- PHY 低功耗连接检测；
+- Port 状态变化；
+- VBUS 状态；
+- Type-C CC 状态。
 
-```text
-链路初始化和训练完成
-        ↓
-       U0
-        ↓
-正常发送和接收SuperSpeed数据
-```
-
-U0 是 U1、U2 和 U3 正常退出后最终返回的活动状态。
+Host 和 Device 的具体检测依据不同，不能统一归纳为必须同时依赖 PHY Detect 和 VBUS。
 
 ---
 
-## 3.2 U1：浅层低功耗状态
+## 5. U1/U2 链路低功耗
 
-`U1` 是 USB 3.x 的浅层链路低功耗状态。
+U1/U2 是 USB 3.x 的链路级低功耗状态，主要用于在链路空闲时降低 PHY 功耗。
 
-设计目标：
+### 5.1 进入 U1/U2
 
-- 降低短暂空闲期间的链路功耗；
-- 保持较低的退出延迟；
-- 保持完整的逻辑连接；
-- 避免频繁空闲时让链路长期停留在 U0。
+链路双方都可以发起进入 U1/U2 的请求。
 
-### U1 中的链路行为
-
-进入 U1 后：
-
-- 不再发送正常数据包；
-- 链路保持逻辑连接；
-- 枚举状态保持；
-- Endpoint 和协议上下文保持；
-- 链路能够快速返回 U0。
-
-### U1 可能采用的硬件节能方式
-
-具体 PHY 可能执行：
-
-- 停止 TX 正常数据发送；
-- 关闭部分 RX 数据路径；
-- 门控部分数字时钟；
-- 关闭部分 SerDes 电路；
-- 保留快速恢复所需的电路。
-
-需要强调：
-
-> USB 3.x 规范不要求所有 PHY 在 U1 中采用完全相同的内部电源方案。
-
-因此不能统一断言：
+基本流程如下：
 
 ```text
-U1一定保持PLL开启
-U1一定对应某个固定PIPE电源状态
+链路处于 U0
+    -> 链路空闲
+    -> 一端发送 LGO_U1 或 LGO_U2
+    -> 对端接受请求
+    -> 双方进入 U1 或 U2
 ```
 
-判断实际硬件行为必须参考具体 PHY 和芯片文档。
+对端可以根据自身状态、延迟要求或当前事务选择接受或拒绝。
 
-### U1 的进入与退出
+### 5.2 软件与硬件分工
 
-概念流程：
+驱动通常负责配置：
+
+- 是否允许进入 U1/U2；
+- U1/U2 Exit Latency；
+- 链路空闲定时器；
+- 链路电源管理策略；
+- Device 或 Port 的相关能力。
+
+配置完成后，通常由控制器硬件自动管理状态切换：
 
 ```text
-U0
- ↓
-链路满足U1进入条件
- ↓
-交换相应Link Command
- ↓
-U1
- ↓
-出现退出条件
- ↓
-恢复链路工作能力
- ↓
-U0
+Driver 配置 LPM Policy 和 Idle Timer
+    -> Bus 空闲达到设定时间
+    -> Controller 自动发送 LGO_U1/U2
+    -> 对端接受
+    -> 进入 U1/U2
 ```
 
-U1 通常适合微秒级或较短时间的链路空闲。
+正常运行过程中，软件通常不需要逐次参与 U1/U2 的进入和退出。
+
+### 5.3 退出 U1/U2
+
+当任意一方有数据需要发送时，可以发起退出。
+
+```text
+U1/U2
+    -> 任意一端发起 LFPS
+    -> PHY 恢复
+    -> Recovery
+    -> U0
+```
+
+U1 保留的 PHY 功能更多，因此退出速度更快；U2 关闭的模块更多，因此恢复时间更长。
 
 ---
 
-## 3.3 U2：较深低功耗状态
+## 6. U3 Suspend
 
-`U2` 是比 U1 更深的链路低功耗状态。
+U3 是 USB 3.x 最深的链路低功耗状态，通常与 USB Suspend 对应。
 
-设计目标：
+需要区分两个概念：
 
-- 在保持逻辑连接的前提下降低更多功耗；
-- 允许关闭比 U1 更多的 PHY 电路；
-- 接受比 U1 更大的退出延迟。
+- **U3**：USB 3.x 链路状态；
+- **Function Suspend**：USB 设备或功能层面的状态。
 
-### U2 中的链路行为
+两者密切相关，但并非完全相同。
 
-进入 U2 后：
+### 6.1 进入 U3
 
-- 正常数据传输停止；
-- 逻辑连接保持；
-- Device Address 和 Configuration 保持；
-- Endpoint 和链路上下文保持；
-- 链路仍具备退出到 U0 的能力。
+U3 只能由链路的 Downstream Port 发起。
 
-### U2 可能采用的硬件节能方式
+在 Host 直连 Device 的场景下，通常由 Host 或 Root Port 发起：
 
-具体实现可能关闭：
+```text
+Host / Downstream Port
+    -> 发送 LGO_U3
+    -> Device / Upstream Port 接受
+    -> 双方进入 U3
+```
 
-- TX 主数据路径；
-- RX 高速数据路径；
+Device 不能自行决定让整条链路进入 U3。
+
+### 6.2 U3 下的 PHY 状态
+
+进入 U3 后，PHY 可以关闭大部分高功耗模块，例如：
+
+- 高速发送电路；
+- 高速接收电路；
 - CDR；
-- 部分或全部高速时钟；
-- PLL 或部分 PLL 电路；
-- 非必要 SerDes 模块。
+- 均衡模块；
+- PLL；
+- 大部分数字链路逻辑。
 
-通常需要保留：
+具体关闭范围取决于控制器和 PHY 的实现。
 
-- 低功耗信号检测能力；
-- 链路退出检测能力；
-- 必要状态保存；
-- 恢复控制逻辑。
+同时，必须保留必要的低功耗检测能力，包括：
 
-同样不能把某种 PHY 的实现推广到所有 USB 3.x PHY：
+- LFPS 检测；
+- 唤醒逻辑；
+- 连接状态变化检测；
+- 必要的 VBUS、CC 或 Port Event 检测。
 
-```text
-U2允许比U1更深的节能
-```
-
-这是通用结论；而：
-
-```text
-U2一定关闭PLL
-```
-
-则属于实现相关结论。
+因此，U3 下可以关闭 PHY 的大部分功能，但不能关闭 LFPS 唤醒和连接事件检测所依赖的 Always-On 电路。
 
 ---
 
-## 3.4 U3：Suspend
+## 7. Host Resume
 
-`U3` 是 USB 3.x 的链路 Suspend 状态。
+当 Host 需要恢复链路时，由 Downstream Port 发起 U3 Exit。
 
-与 U1/U2 相比：
-
-- U3 适合更长时间的链路空闲；
-- 允许采用更深的硬件低功耗方案；
-- 退出延迟通常更大；
-- 仍保持 SuperSpeed 逻辑连接和枚举状态。
-
-### U3 中保留的内容
-
-正常情况下需要保持或能够恢复：
-
-- Device Address；
-- Configuration；
-- Interface 设置；
-- Endpoint 配置；
-- 必要的链路状态；
-- 必要的设备功能状态；
-- 低功耗唤醒信号检测能力。
-
-因此 U3 不是物理断开。
-
-### U3 中可能关闭的硬件
-
-具体芯片可能关闭：
-
-- SuperSpeed TX/RX 主路径；
-- PLL 和 CDR；
-- 高速 reference/data clock；
-- 大部分 PHY 模拟电路；
-- 非必要数字逻辑。
-
-通常需要保留：
-
-- LFPS 检测路径；
-- 链路退出检测逻辑；
-- VBUS 或连接相关检测；
-- 必要状态 retention；
-- 低功耗恢复控制电路。
-
-### U3 的退出
-
-概念流程：
+基本流程如下：
 
 ```text
 U3
- ↓
-检测到合法唤醒或退出信号
- ↓
-恢复PHY工作能力
- ↓
-链路进入恢复过程
- ↓
-返回U0
+    -> Host 发送 LFPS
+    -> Device 检测到 LFPS
+    -> Device 恢复 PLL、CDR、Rx、Tx 等 PHY 模块
+    -> 双方完成 U3 Exit 相关握手
+    -> 进入 Recovery
+    -> 恢复到 U0
 ```
 
-正常退出 U3 后：
-
-- 不需要重新分配设备地址；
-- 不需要重新设置 Configuration；
-- 不需要重新执行完整枚举。
+Device 在检测到 LFPS 后恢复 PHY，但不会单方面直接进入 U0。链路双方仍需完成对应的退出和恢复流程。
 
 ---
 
-# 4. U1、U2、U3 的区别
+## 8. Device Remote Wake
 
-## 4.1 核心对比
+Remote Wake 是由 Device 侧发起的链路唤醒。
 
-| 项目 | U1 | U2 | U3 |
-|---|---|---|---|
-| 定位 | 浅层链路节能 | 较深链路节能 | 链路 Suspend |
-| 适合的空闲时间 | 短 | 中等 | 较长 |
-| 正常数据传输 | 否 | 否 | 否 |
-| 保持逻辑连接 | 是 | 是 | 是 |
-| 保持枚举状态 | 是 | 是 | 是 |
-| 退出延迟 | 最小 | 大于 U1 | 通常最大 |
-| PHY 节能空间 | 较小 | 较大 | 最大 |
-| 返回目标状态 | U0 | U0 | 经恢复过程返回 U0 |
-| 是否重新枚举 | 否 | 否 | 否 |
-
-可以简化理解为：
+基本流程如下：
 
 ```text
-U1：快速省一点
-U2：允许多省一些
-U3：正式进入链路Suspend
+U3
+    -> Device 产生远程唤醒事件
+    -> Device 发送 LFPS
+    -> Host 或 Hub 检测到 LFPS
+    -> Host 或 Hub 恢复 PHY 和链路逻辑
+    -> 双方进入 Recovery
+    -> 返回 U0
+    -> Host 软件处理 Remote Wake 事件
 ```
 
+Device 发起 Remote Wake 通常需要满足以下条件：
+
+- Device 支持 Remote Wake；
+- Host 已允许 Device 使用 Remote Wake；
+- 当前 Device 或 Function 处于允许唤醒的 Suspend 状态；
+- 唤醒信号满足规范要求的时序。
+
+如果链路中存在 USB Hub，Remote Wake 会通过 Hub 逐级向上游传播，而不是直接到达 Root Port。
+
 ---
 
-## 4.2 U1/U2 不等于 U3
+## 9. 流程汇总
 
-虽然三者都停止正常数据传输，但协议定位不同：
+### 9.1 插入与链路初始化
+
+#### Device 侧
 
 ```text
-U1/U2：
-    Link Power Management状态
-    针对正常运行过程中的链路空闲
-
-U3：
-    Suspend状态
-    针对更长时间的链路挂起
+VBUS Valid
+    -> 使能 PHY
+    -> 打开 Rx Termination
+    -> 等待 Host 发起链路检测
 ```
 
-U1/U2 通常会更频繁地进入和退出，而 U3 更适合较长时间保持低功耗。
-
----
-
-# 5. USB 2.0 与 USB 3.x 状态对应
-
-## 5.1 概念映射
+#### Host 侧
 
 ```text
-USB 2.0                  USB 3.x
-────────                 ─────────
-L0 On          ≈         U0 Active
-
-L1 Sleep       ≈         U1/U2 Standby
-                          仅设计目标相似，不严格等价
-
-L2 Suspend     ≈         U3 Suspend
-
-L3 Off         ≈         断开、关闭或不可用状态
+Rx.Detect
+    -> Polling / LFPS
+    -> Equalization
+    -> Configuration
+    -> U0
 ```
 
----
+### 9.2 U1/U2 进入与退出
 
-## 5.2 完整对比
-
-| 状态 | 正常传输 | 保持连接 | 保持枚举上下文 | 状态定位 | 正常返回后重新枚举 |
-|---|---:|---:|---:|---|---:|
-| USB2 `L0` | 是 | 是 | 是 | 活动 | 否 |
-| USB2 `L1` | 否 | 是 | 是 | 快速 Sleep | 否 |
-| USB2 `L2` | 否 | 是 | 是 | Suspend | 否 |
-| USB2 `L3` | 否 | 否 | 否 | Off | 通常需要 |
-| USB3 `U0` | 是 | 是 | 是 | 活动 | 否 |
-| USB3 `U1` | 否 | 是 | 是 | 浅层 Standby | 否 |
-| USB3 `U2` | 否 | 是 | 是 | 深层 Standby | 否 |
-| USB3 `U3` | 否 | 是 | 是 | Suspend | 否 |
-
----
-
-## 5.3 L1 与 U1/U2 不严格等价
-
-L1、U1、U2 都用于降低链路空闲功耗，但协议机制不同。
-
-| 项目 | USB2 L1 | USB3 U1/U2 |
-|---|---|---|
-| 所属链路 | USB 2.0 | SuperSpeed |
-| 状态数量 | 一个 Sleep 状态 | 两个 Standby 状态 |
-| 进入机制 | LPM transaction | Link Command 和 LTSSM |
-| 退出能力描述 | HIRD/BESL 等 | U1/U2 Exit Latency |
-| 物理层 | USB2 D+/D- PHY | SuperSpeed SerDes PHY |
-| 内部节能方式 | 实现相关 | 实现相关 |
-
-因此准确说法是：
-
-> USB2 L1 和 USB3 U1/U2 都面向链路低功耗，但它们不是可以直接互换的协议状态。
-
----
-
-# 6. 状态转换
-
-## 6.1 USB 2.0
-
-简化状态转换：
+#### 进入 U1/U2
 
 ```text
-                 LPM请求
-          ┌──────────────────┐
-          ▼                  │
-         L1 ───退出信号────► L0
-                              │
-          ▲                   │ 总线持续idle
-          │                   ▼
-          └───────────────   L2
-                  Resume ─────┘
-
-断开、VBUS消失或关闭
-          ↓
-         L3
+U0
+    -> 链路空闲
+    -> 任意一端发送 LGO_U1/U2
+    -> 对端接受
+    -> U1/U2
 ```
 
-主要转换：
-
-| 转换 | 含义 |
-|---|---|
-| `L0 → L1` | Host 通过 LPM 机制请求快速睡眠 |
-| `L1 → L0` | 链路退出 L1，恢复活动 |
-| `L0 → L2` | 总线持续空闲，进入传统 Suspend |
-| `L2 → L0` | Resume signaling 使总线恢复 |
-| `L0/L1/L2 → L3` | 连接丢失、关闭或掉电 |
-| `L3 → L0` | 重新连接并完成必要初始化与枚举 |
-
----
-
-## 6.2 USB 3.x
-
-简化状态转换：
+#### 退出 U1/U2
 
 ```text
-                    ┌──── U1 ────┐
-                    │             │
-                    ▼             │
-恢复/链路活动 ────► U0 ◄──────────┘
-                    │
-                    ├──── U2 ────┐
-                    │             │
-                    ◄─────────────┘
-                    │
-                    └──── U3
-                           │
-                    唤醒和链路恢复
-                           │
-                           └────► U0
+U1/U2
+    -> 任意一端产生数据发送需求
+    -> 发起 LFPS
+    -> Recovery
+    -> U0
 ```
 
-主要转换：
+### 9.3 U3 Suspend 与 Host Resume
 
-| 转换 | 含义 |
-|---|---|
-| `U0 → U1` | 链路进入浅层低功耗 |
-| `U1 → U0` | 链路快速恢复活动 |
-| `U0 → U2` | 链路进入更深低功耗 |
-| `U2 → U0` | 链路恢复活动 |
-| `U0 → U3` | 链路进入 Suspend |
-| `U3 → U0` | 经唤醒和链路恢复过程返回活动状态 |
-
-实际 LTSSM 可能经过中间状态，以上只表示 U 状态之间的概念关系。
-
----
-
-# 7. Exit Latency
-
-## 7.1 USB2 L1 延迟
-
-USB2 L1 的恢复服务能力与以下参数有关：
-
-- HIRD；
-- BESL；
-- 设备自身恢复时间；
-- Hub 和总线路径；
-- Host 的调度要求。
-
-L1 的核心目标是比传统 L2 更适合短时间空闲。
-
----
-
-## 7.2 USB3 U1/U2 延迟
-
-SuperSpeed 设备会报告 U1 和 U2 的 Device Exit Latency：
-
-| 字段 | 含义 |
-|---|---|
-| `bU1DevExitLat` | Device 从 U1 退出所需的延迟 |
-| `wU2DevExitLat` | Device 从 U2 退出所需的延迟 |
-
-一般关系：
+#### 进入 U3
 
 ```text
-U1 Device Exit Latency < U2 Device Exit Latency
+Host / Downstream Port
+    -> 发送 LGO_U3
+    -> Device 接受
+    -> U3
+    -> PHY 大部分模块关闭
+    -> 保留 LFPS 和连接事件检测
 ```
 
-Host 会结合整条拓扑的延迟决定是否使用 U1/U2。
-
-### 报告过小
+#### Host Resume
 
 ```text
-描述符报告值 < 硬件真实恢复时间
+U3
+    -> Host 发送 LFPS
+    -> Device 恢复 PHY
+    -> Recovery
+    -> U0
 ```
 
-可能导致：
-
-- 恢复后不能及时接收数据；
-- 事务超时；
-- 链路错误；
-- 间歇性兼容问题。
-
-### 报告过大
+### 9.4 Device Remote Wake
 
 ```text
-描述符报告值 > 硬件真实恢复时间
+U3
+    -> Device 产生远程唤醒事件
+    -> Device 在获得授权后发送 LFPS
+    -> Host / Hub 唤醒
+    -> Recovery
+    -> U0
 ```
 
-可能导致：
+### 9.5 拔出检测
 
-- Host 不启用 U1/U2；
-- Host 只启用 U1；
-- 链路长期停留在 U0；
-- 实际功耗高于预期。
-
----
-
-# 8. PHY 内部实现边界
-
-USB 状态描述的是协议可见的链路行为，不是固定的芯片电源开关表。
-
-规范通常不会统一规定：
-
-- U1 是否必须保持 PLL；
-- U2 是否必须关闭 PLL；
-- U3 是否必须关闭 reference clock；
-- L1 是否可以关闭 PHY 时钟；
-- L2 必须保留哪些内部电源域；
-- 每个 U 状态固定对应哪个 PIPE P-state。
-
-正确分析方式：
+#### Device 侧
 
 ```text
-USB链路状态要求
-        +
-设备声明的退出延迟
-        +
-PHY数据手册
-        +
-PIPE接口版本
-        +
-芯片时钟和电源结构
-        ↓
-确定实际可关闭的硬件资源
+VBUS Loss
+    / CC Detach
+    / PHY 或链路状态变化
+        -> 判断连接断开
 ```
 
-### 通用原则
-
-| 状态 | 通常可获得的硬件节能空间 |
-|---|---|
-| L0/U0 | 最小 |
-| L1/U1 | 较小，优先保证快速退出 |
-| U2 | 较大，但仍需满足声明的退出延迟 |
-| L2/U3 | 最大，同时保持必要检测和状态 |
-| L3/断开 | 可完全关闭，枚举上下文通常不保留 |
-
----
-
-# 9. USB3 U3 与 USB2 链路的关系
-
-USB 3.x 双总线设备通常同时具有：
+#### Host 侧
 
 ```text
-USB2 D+/D-链路
-+
-SuperSpeed TX/RX链路
-```
-
-两套链路分别管理自己的状态：
-
-- USB2 链路使用 L 状态；
-- SuperSpeed 链路使用 U 状态；
-- USB2 的连接检测使用 D+/D- 电气机制；
-- SuperSpeed 使用自身的链路状态机和低频信号机制。
-
-因此：
-
-> SuperSpeed U3 的逻辑连接不依赖 USB2 D+ pull-up 维持。
-
-可能同时出现：
-
-```text
-USB2链路：L2
-SuperSpeed链路：U3
-```
-
-但这是两套链路分别进入各自的 Suspend 状态，不能把 `L2` 和 `U3` 当作同一个硬件状态。
-
----
-
-# 10. 非 U 状态的 USB3 链路状态
-
-USB3 LTSSM 除了 U0/U1/U2/U3，还包含其他状态，例如：
-
-- Polling；
-- Recovery；
-- Hot Reset；
-- Compliance；
-- Loopback；
-- SS.Disabled；
-- SS.Inactive；
-- Rx.Detect。
-
-这些状态用于：
-
-- 连接检测；
-- 链路训练；
-- 错误恢复；
-- Reset；
-- 一致性测试；
-- 链路不可用处理。
-
-它们不是 U1/U2/U3 这种正常运行期间的链路电源状态。
-
-特别注意：
-
-```text
-U3 = 保持逻辑连接的Suspend状态
-SS.Disabled/SS.Inactive = 链路不可正常工作的LTSSM状态
-```
-
-两者不能混淆。
-
----
-
-# 11. 常见误区
-
-## 11.1 U1/U2/U3 都是 Suspend
-
-不准确。
-
-正确分类：
-
-```text
-U1：浅层Standby
-U2：较深Standby
-U3：Suspend
-```
-
-三者都停止普通数据传输，但只有 U3 的协议定位是 Suspend。
-
----
-
-## 11.2 进入 U3 就表示设备断开
-
-错误。
-
-U3 中：
-
-- 逻辑连接仍保持；
-- 枚举上下文仍保持；
-- 正常退出后返回 U0；
-- 不需要重新枚举。
-
----
-
-## 11.3 U2 一定关闭 PLL
-
-不一定。
-
-U2 允许比 U1 更深的节能，但 PLL 是否关闭由 PHY 设计和退出延迟要求决定。
-
----
-
-## 11.4 U1 一定保持所有高速时钟
-
-不一定。
-
-只要满足链路行为和退出延迟要求，PHY 可以采用自己的内部时钟与电源控制方案。
-
----
-
-## 11.5 USB2 L1 就是 USB3 U1
-
-错误。
-
-两者设计目标相似，但：
-
-- 协议机制不同；
-- 物理层不同；
-- 延迟描述方式不同；
-- 状态划分不同。
-
----
-
-## 11.6 U3 依赖 USB2 D+ pull-up 维持连接
-
-错误。
-
-USB2 和 SuperSpeed 是相对独立的两套链路。SuperSpeed U3 的连接上下文由 SuperSpeed 链路自身保持。
-
----
-
-# 12. 速查表
-
-| 版本 | 状态 | 类型 | 数据传输 | 连接保持 | 退出后重新枚举 |
-|---|---|---|---:|---:|---:|
-| USB2 | `L0` | Active | 是 | 是 | 否 |
-| USB2 | `L1` | LPM Sleep | 否 | 是 | 否 |
-| USB2 | `L2` | Suspend | 否 | 是 | 否 |
-| USB2 | `L3` | Off | 否 | 否 | 通常需要 |
-| USB3 | `U0` | Active | 是 | 是 | 否 |
-| USB3 | `U1` | 浅层 Standby | 否 | 是 | 否 |
-| USB3 | `U2` | 深层 Standby | 否 | 是 | 否 |
-| USB3 | `U3` | Suspend | 否 | 是 | 否 |
-
-最终可简化为：
-
-```text
-USB 2.0:
-L0 = Active
-L1 = 快速LPM Sleep
-L2 = Suspend
-L3 = Off
-
-USB 3.x:
-U0 = Active
-U1 = 浅层Standby
-U2 = 深层Standby
-U3 = Suspend
-```
-
-核心关系：
-
-```text
-L0 ≈ U0
-L1 ≈ U1/U2，但不严格等价
-L2 ≈ U3
-L3 ≈ 断开或关闭
+Receiver Termination 消失
+    / CC Detach
+    / PHY 或链路状态变化
+        -> 判断 Device 拔出
 ```
