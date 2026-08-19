@@ -176,6 +176,24 @@ port=5, transfer_id=101    第二笔
 
   
 
+#### transfer_id 由 Host 集中分配
+
+  
+
+驱动只把 `transfer_id` 当入参：谁分配、怎么协商，驱动不参与（它只用 id 建表、去重、ABORT 定位）。业务层约定 **Host 作为唯一分配者**，两个方向共用同一 id 空间，天然保证唯一、且不会 H2D/D2H 撞号：
+
+  
+
+- **H2D（Host 发）**：Host 自分配自用 —— 分配 id → OFFER 直接带 id → Device `recv(id)` 预投 → ACK → Host `submit(id)`。
+
+- **D2H（Device 发）**：Device 先请求 —— Device 发 OFFER（带业务侧临时 `local_tag` + port + total_len，不带 id）→ Host 分配 id → Host 先 `recv(id)` 预投 → ACK 回带 `(local_tag, id)` → Device 用 `local_tag` 认领 id 后 `submit(id)`。
+
+  
+
+要点：① OFFER 必须带 `port` 和 `total_len`（接收端据此备 dest buffer）；② 接收端 `recv` 预投必须在 ACK 之前，ACK 语义即“我已就绪，用这个 id”；③ D2H 的 `local_tag` 仅用于 Device 匹配自己哪一个 OFFER 的 ACK，只在控制消息里，不上 xfer wire；④ 分配的 id 应绑当前 link generation，重连后旧 id 作废。
+
+  
+
 ### 1.5 完成回调 complete(priv, status, actual)
 
   
@@ -224,7 +242,7 @@ complete(priv, status, actual)   后：报告结果与实传字节
 
   
 
-1. `transfer_id` 由业务层维护：非零、本端收发两表内唯一、两端必须一致。驱动校验非零与去重，但无法校验两端一致。
+1. `transfer_id` 由业务层维护、**Host 集中分配**（见 1.4）：非零、本端收发两表内唯一、两端必须一致。驱动校验非零与去重，但无法校验两端一致，一致性由 OFFER/ACK 协议保证。
 
 2. 同方向单笔串行：xfer 数据面是纯字节流，同一方向同一时刻只能有一笔在传，否则字节交错损坏。多笔请排队。
 
@@ -848,7 +866,7 @@ ssize_t ax_usb_xfer_host_send_frame(struct ax_usb_xfer_host *host,
 
   
 
-图为函数调用视角：业务层按什么顺序调哪个接口、回调如何串接。OFFER / ACK 均走 frame 通路（`send_frame` CTRL），数据走 xfer 通路。
+图为函数调用视角：业务层按什么顺序调哪个接口、回调如何串接。OFFER / ACK 均走 frame 通路（`send_frame` CTRL），数据走 xfer 通路。**`transfer_id` 一律由 Host 分配**（见 1.4）：H2D 时 Host 自分配，D2H 时 Host 应 Device 请求而分配、经 ACK 回传。
 
   
 
@@ -872,7 +890,7 @@ register_client(ops)                 register_client(ops)
 
         |                                 |
 
-生成 transfer_id                          |
+Host 分配 transfer_id                     |
 
         |                                 |
 
@@ -882,9 +900,9 @@ ax_usb_xfer_host_send_frame -- OFFER ---> frame_received 回调
 
         |                         ax_usb_xfer_device_recv(port, id, dest)
 
-        |                                 |
+        |                                 |    先预投，再回 ACK
 
-frame_received 回调 <---- ACK ----- ax_usb_xfer_device_send_frame(CTRL, ACK)
+frame_received 回调 <---- ACK ----- ax_usb_xfer_device_send_frame(CTRL, ACK{id})
 
         |                                 |
 
@@ -908,7 +926,7 @@ src->release(priv)                   dest->release(priv)
 
   
 
-方向对称：发送端在 Device（`submit`），接收端在 Host（`recv`），数据走 `xfer_in`。
+发送端在 Device（`submit`），接收端在 Host（`recv`），数据走 `xfer_in`。与 H2D 不同：id 仍由 Host 分配，Device 先发 OFFER 请求，Host 分配后经 ACK 回传 id。
 
   
 
@@ -926,21 +944,25 @@ register_client(ops)                 register_client(ops)
 
         |                                 |
 
-生成 transfer_id                          |
+生成本地 local_tag                        |
 
         |                                 |
 
 ax_usb_xfer_device_send_frame - OFFER --> frame_received 回调
 
-  (CTRL, OFFER{id,port,len})                    |
+  (CTRL, OFFER{local_tag,port,len})             |
 
-        |                     ax_usb_xfer_host_recv(host, id, port, dest)
+        |                            Host 分配 transfer_id
+
+        |                            ax_usb_xfer_host_recv(host, id, port, dest)
+
+        |                                 |    先预投，再回 ACK
+
+frame_received 回调 <- ACK{local_tag,id} - ax_usb_xfer_host_send_frame(host, CTRL, ACK)
 
         |                                 |
 
-frame_received 回调 <---- ACK ----- ax_usb_xfer_host_send_frame(host, CTRL, ACK)
-
-        |                                 |
+用 local_tag 认领 id                      |
 
 ax_usb_xfer_device_submit(port,id,source) |
 
@@ -1024,7 +1046,9 @@ H2D 收:   收到 OFFER（frame_received） -> 备 dest SG
 
   
 
-D2H 发:   已发 OFFER，收到 ACK
+D2H 发:   生成 local_tag，发 OFFER(local_tag, port, total_len)
+
+          收到 ACK(local_tag, id)，用 local_tag 认领 id
 
           ax_usb_xfer_device_submit(port, id, source)
 
@@ -1056,9 +1080,9 @@ D2H 发:   已发 OFFER，收到 ACK
 
   
 
-H2D 发:   生成 transfer_id
+H2D 发:   Host 分配 transfer_id
 
-          ax_usb_xfer_host_send_frame(host, CTRL, port, OFFER)
+          ax_usb_xfer_host_send_frame(host, CTRL, port, OFFER{id})
 
           收到 ACK（frame_received）
 
@@ -1068,11 +1092,11 @@ H2D 发:   生成 transfer_id
 
   
 
-D2H 收:   收到 OFFER（frame_received） -> 备 dest SG
+D2H 收:   收到 OFFER(local_tag)（frame_received） -> Host 分配 id -> 备 dest SG
 
-          ax_usb_xfer_host_recv(host, id, port, dest)      返回 0
+          ax_usb_xfer_host_recv(host, id, port, dest)      返回 0（先预投）
 
-          ax_usb_xfer_host_send_frame(host, CTRL, port, ACK)
+          ax_usb_xfer_host_send_frame(host, CTRL, port, ACK{local_tag,id})
 
           等 dest->complete(status, actual)
 
