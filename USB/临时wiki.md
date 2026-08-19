@@ -518,47 +518,11 @@ port=5, transfer_id=101    第二笔
 
   
 
-以下提供两种视角的图。图 A 为时序视角（谁先谁后、跨端消息往来），图 B 为函数调用视角（业务层按什么顺序调哪个接口）。
+图为函数调用视角：业务层按什么顺序调哪个接口、回调如何串接。
 
   
 
-### 5.1 H2D 时序图（图 A）
-
-  
-
-```text
-
-Host 业务层            Host driver          Device driver          Device 业务层
-
------------            -----------          -------------          -------------
-
-[1] 生成 transfer_id
-
-[2] send_frame                 --- OFFER --->  frame_received  -->  [3] 收 OFFER
-
-    (CTRL, OFFER)                                                       备好 dest SG
-
-                                                                    [4] recv(port,id,dest)
-
-                                                                        预投接收窗口
-
-[7] 收 ACK      <--  frame_received  <-- ACK ---  send_frame     <--  [5] send_frame
-
-    submit(host,id,port,src)                        (CTRL, ACK)            (CTRL, ACK)
-
-[8] ==== payload SG ====>  xfer_out  ==========>  预投 OUT 收数据
-
-                                                  actual == total_len ?
-
-[10] src->complete(0) <--                     -->  [9] dest->complete(0, actual)
-
-                                                       release(priv)
-
-```
-
-  
-
-### 5.2 H2D 函数调用图（图 B）
+### 5.1 H2D 调用图（Host 发 / Device 收）
 
   
 
@@ -608,47 +572,11 @@ src->release(priv)                   dest->release(priv)
 
   
 
-### 5.3 D2H 时序图（图 A）
+### 5.2 D2H 调用图（Device 发 / Host 收）
 
   
 
 方向对称：发送端在 Device（`submit`），接收端在 Host（`recv`），数据走 `xfer_in`。
-
-  
-
-```text
-
-Device 业务层          Device driver        Host driver            Host 业务层
-
--------------          -------------        -----------            -----------
-
-[1] 生成 transfer_id
-
-[2] send_frame                 --- OFFER --->  frame_received  -->  [3] 收 OFFER
-
-    (CTRL, OFFER)                                                       备好 dest SG
-
-                                                                    [4] recv(host,id,port,dest)
-
-                                                                        预投接收窗口
-
-[7] 收 ACK      <--  frame_received  <-- ACK ---  send_frame     <--  [5] send_frame
-
-    submit(port,id,source)                          (CTRL, ACK)            (CTRL, ACK)
-
-[8] ==== payload SG ====>  xfer_in  ==========>  预投 IN 收数据
-
-                                                 actual == total_len ?
-
-[10] source->complete(0) <--                  -->  [9] dest->complete(0, actual)
-
-                                                       release(priv)
-
-```
-
-  
-
-### 5.4 D2H 函数调用图（图 B）
 
   
 
@@ -698,7 +626,7 @@ source->release(priv)                dest->release(priv)
 
   
 
-### 5.5 异常收敛图（任一方向通用）
+### 5.3 异常收敛图（任一方向通用）
 
   
 
