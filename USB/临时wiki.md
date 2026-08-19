@@ -254,6 +254,44 @@ complete(priv, status, actual)   后：报告结果与实传字节
 
   
 
+### 1.7 链路状态：上下线、挂起，通知 + 查询
+
+  
+
+驱动区分两类状态，两侧对称，业务层可“推”（回调）也可“拉”（查询）：
+
+  
+
+- **online / offline**：是否已枚举。上下线经 `link_changed(online)` 回调通知（必选回调）。
+
+- **suspended**：online 但被总线挂起（可 resume 恢复，与下线不同）。变化经 `suspend_changed(suspended)` 回调通知（**可选回调**，NULL 则不回调）。
+
+  
+
+查询接口（推拉并存，不注册回调也能主动查）：
+
+  
+
+```text
+
+is_online()      是否已枚举
+
+is_suspended()   online && 已挂起
+
+is_ready()       online && !suspended —— 业务“能否发起 xfer”看这个
+
+```
+
+  
+
+说明：① `suspend_changed` 可选，业务层不实现也不影响；② `register_client` 不补投挂起态——新注册 client 想知道当前是否挂起，直接查 `is_suspended()`；③ 挂起期间驱动不硬拒 `submit`/`recv`（入口仍只 gate online），业务层按 `is_ready()` 自行判断是否发起。
+
+  
+
+---
+
+  
+
 ---
 
   
@@ -262,7 +300,7 @@ complete(priv, status, actual)   后：报告结果与实传字节
 
   
 
-Device 端提供 7 个函数 + 1 个回调结构体：
+Device 端提供 9 个函数 + 1 个回调结构体：
 
   
 
@@ -280,7 +318,7 @@ Device 端提供 7 个函数 + 1 个回调结构体：
 
   
 
-- `struct ax_usb_xfer_device_client_ops` — 业务层实现：`frame_received` / `link_changed`
+- `struct ax_usb_xfer_device_client_ops` — 业务层实现：`frame_received` / `link_changed` / `suspend_changed`（可选）
 
   
 
@@ -308,6 +346,10 @@ Device 端提供 7 个函数 + 1 个回调结构体：
 
 - `ax_usb_xfer_device_is_online` — 查询当前链路是否在线
 
+- `ax_usb_xfer_device_is_suspended` — 查询是否总线挂起（online 且已挂起）
+
+- `ax_usb_xfer_device_is_ready` — 查询是否可发起 xfer（online && !suspended）
+
   
 
 ### 2.1 ax_usb_xfer_device_register_client
@@ -323,6 +365,10 @@ struct ax_usb_xfer_device_client_ops {
                                const void *payload, u32 payload_len);
 
         void (*link_changed)(void *priv, bool online);
+
+        /* 可选：总线 suspend/resume 时通知，NULL 则不回调 */
+
+        void (*suspend_changed)(void *priv, bool suspended);
 
 };
 
@@ -534,19 +580,23 @@ int ax_usb_xfer_device_send_frame(u32 type, u32 port,
 
   
 
-### 2.6 ax_usb_xfer_device_is_online
+### 2.6 ax_usb_xfer_device_is_online / is_suspended / is_ready
 
   
 
 ```c
 
-bool ax_usb_xfer_device_is_online(void);
+bool ax_usb_xfer_device_is_online(void);     /* 是否已枚举在线 */
+
+bool ax_usb_xfer_device_is_suspended(void);  /* online && 已总线挂起 */
+
+bool ax_usb_xfer_device_is_ready(void);      /* online && !suspended */
 
 ```
 
   
 
-作用：查询当前 gadget 链路是否在线。轻量，可随时调用。返回 `true` 表示已枚举且可收发。
+作用：查询链路状态，轻量，可随时调用。三态语义见 1.7。业务层“能否发起 xfer”查 `is_ready()` 即可，无需自行组合 online 与 suspended。挂起（`is_suspended` 为 true）可经 resume 恢复，与下线（`is_online` 为 false）不同。
 
   
 
@@ -558,7 +608,7 @@ bool ax_usb_xfer_device_is_online(void);
 
   
 
-Host 端提供 6 个函数 + 1 个回调结构体。与 Device 端主要差异：接口带 `host` 句柄、多 `host_added` / `host_removed` 两个回调、额外提供 `cancel`、`send_frame` 返回已发送字节数。
+Host 端提供 9 个函数 + 1 个回调结构体。与 Device 端主要差异：接口带 `host` 句柄、多 `host_added` / `host_removed` 两个回调、额外提供 `cancel`、`send_frame` 返回已发送字节数。
 
   
 
@@ -576,7 +626,7 @@ Host 端提供 6 个函数 + 1 个回调结构体。与 Device 端主要差异�
 
   
 
-- `struct ax_usb_xfer_host_client_ops` — 业务层实现：`frame_received` / `link_changed` / `host_added` / `host_removed`
+- `struct ax_usb_xfer_host_client_ops` — 业务层实现：`frame_received` / `link_changed` / `host_added` / `host_removed` / `suspend_changed`（可选）
 
   
 
@@ -600,6 +650,16 @@ Host 端提供 6 个函数 + 1 个回调结构体。与 Device 端主要差异�
 
   
 
+**句柄 / 状态查询**
+
+  
+
+- `ax_usb_xfer_host_find_by_id` / `ax_usb_xfer_host_put` / `ax_usb_xfer_host_id` — 按稳定 id 取带引用的 host、释放、取 id
+
+- `ax_usb_xfer_host_is_online` / `is_suspended` / `is_ready` — 三态查询
+
+  
+
 ### 3.1 ax_usb_xfer_host_register_client
 
   
@@ -608,15 +668,25 @@ Host 端提供 6 个函数 + 1 个回调结构体。与 Device 端主要差异�
 
 struct ax_usb_xfer_host_client_ops {
 
-        int  (*frame_received)(void *priv, u32 type, u32 port,
+        int  (*frame_received)(void *priv, struct ax_usb_xfer_host *host,
+
+                               u32 type, u32 port,
 
                                const void *payload, u32 payload_len);
 
-        void (*link_changed)(void *priv, bool online);
+        void (*link_changed)(void *priv, struct ax_usb_xfer_host *host,
+
+                             bool online);
 
         void (*host_added)(void *priv, struct ax_usb_xfer_host *host);
 
         void (*host_removed)(void *priv, struct ax_usb_xfer_host *host);
+
+        /* 可选：总线 suspend/resume 时通知，NULL 则不回调 */
+
+        void (*suspend_changed)(void *priv, struct ax_usb_xfer_host *host,
+
+                                bool suspended);
 
 };
 
@@ -638,7 +708,7 @@ int ax_usb_xfer_host_register_client(
 
   
 
-- `ops`：回调表，四个回调都不能为空，否则返回 `-EINVAL`。
+- `ops`：回调表，前四个回调（`frame_received`/`link_changed`/`host_added`/`host_removed`）不能为空，否则返回 `-EINVAL`；`suspend_changed` 可选（可为 NULL）。
 
 - `priv`：业务上下文，原样透传给回调第一个参数。
 
@@ -648,13 +718,15 @@ int ax_usb_xfer_host_register_client(
 
   
 
-- `frame_received(priv, type, port, payload, len)`：收到 frame 通路完整帧时触发。`payload` 是借用指针，仅回调期间有效。xfer 大块数据不走此回调。
+- `frame_received(priv, host, type, port, payload, len)`：收到 frame 通路完整帧时触发，`host` 标识来自哪个 Device。`payload` 是借用指针，仅回调期间有效。xfer 大块数据不走此回调。
 
-- `link_changed(priv, online)`：链路上线 / 下线通知。
+- `link_changed(priv, host, online)`：该 `host` 的链路上线 / 下线通知。
 
-- `host_added(priv, host)`：一个 Device 枚举成功，下发其句柄。业务层须保存此 `host` 用于后续收发。注册时若已有在线 Device，会立即回调一次。
+- `host_added(priv, host)`：一个 Device 枚举成功，下发其句柄。业务层须保存此 `host` 用于后续收发。注册时若已有在线 Device，会逐个补投一次。
 
 - `host_removed(priv, host)`：该 Device 断开，句柄即将失效，业务层须停止使用。
+
+- `suspend_changed(priv, host, suspended)`（可选）：该 `host` 总线挂起 / 恢复通知，见 1.7。
 
   
 
@@ -855,6 +927,40 @@ ssize_t ax_usb_xfer_host_send_frame(struct ax_usb_xfer_host *host,
   
 
 > 注意：Host 的 `send_frame` 成功返回字节数，Device 的 `send_frame` 成功返回 0，判断成功时须区分。
+
+  
+
+### 3.7 句柄查找与状态查询
+
+  
+
+```c
+
+struct ax_usb_xfer_host *ax_usb_xfer_host_find_by_id(u32 id); /* 返回带引用的 host */
+
+void ax_usb_xfer_host_put(struct ax_usb_xfer_host *host);     /* 释放 find_by_id 的引用 */
+
+u32  ax_usb_xfer_host_id(struct ax_usb_xfer_host *host);      /* (busnum<<16)|devnum */
+
+  
+
+bool ax_usb_xfer_host_is_online(struct ax_usb_xfer_host *host);
+
+bool ax_usb_xfer_host_is_suspended(struct ax_usb_xfer_host *host);  /* online && 挂起 */
+
+bool ax_usb_xfer_host_is_ready(struct ax_usb_xfer_host *host);      /* online && !suspended */
+
+```
+
+  
+
+作用：
+
+  
+
+- **多 device 查找**：`find_by_id` 按稳定 id `(busnum<<16)|devnum` 查在线 host，命中返回带引用的句柄，用完必须 `put`（只能在可睡眠上下文调用）。收到 `host_removed` 后须释放之前 `find_by_id` 得到的全部引用。`id` 取自 `ax_usb_xfer_host_id(host)`，可在 `host_added`/`host_removed` 之间关联同一 host。
+
+- **状态查询**：三态语义见 1.7，带 `host` 句柄（多实例，各 host 独立）。业务“能否发起 xfer”查 `is_ready()`。
 
   
 
