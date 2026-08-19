@@ -1,380 +1,633 @@
-# USB 3.x 休眠与唤醒逻辑
+# AX USB XFER — Device 端驱动对外接口说明
 
-## 1. 概述
+  
 
-本文主要梳理 USB 3.x 的以下流程：
+> 面向业务层调用者。本文描述 `ax_usb_xfer_device.ko` 暴露给上层的全部 EXPORT 接口、参数语义与调用流程。
 
-- 设备插入与拔出检测
-- U1/U2 链路低功耗
-- U3 Suspend
-- Host Resume
-- Device Remote Wake
+>
 
-链路训练过程不做深入展开，仅简化描述为：
+> - 头文件：`include/ax_usb_xfer_device.h`（接口）、`include/ax_usb_xfer.h`（source/dest 结构）、`include/ax_usb_xfer_proto.h`（常量）。
 
-```text
-Rx.Detect
-    -> Polling / LFPS
-    -> Equalization
-    -> Configuration
-    -> U0
-```
+> - 所有符号为 `EXPORT_SYMBOL_GPL`，调用模块必须声明 GPL 兼容 license。
+
+> - Device 侧为**单实例**：接口不带 handle，内部按当前在线 gadget 自动路由。
+
+  
 
 ---
 
-## 2. USB 3.x 主要链路状态
+  
 
-| 状态 | 说明 |
+## 1. 接口总览
+
+  
+
+Device 端对业务层暴露 **7 个函数** + **1 个回调结构体**，按用途分四组：
+
+  
+
+| 分组 | 接口 | 作用 |
+
+|---|---|---|
+
+| **注册/注销** | `ax_usb_xfer_device_register_client` | 注册回调（收 frame + 链路状态），全局单 client |
+
+| | `ax_usb_xfer_device_unregister_client` | 注销回调，返回后保证回调不再触发 |
+
+| **回调** | `struct ax_usb_xfer_device_client_ops` | 业务层实现：`frame_received` / `link_changed` |
+
+| **大块数据（异步 SG）** | `ax_usb_xfer_device_submit` | **D2H 发送**：Device→Host 提交一笔 source SG |
+
+| | `ax_usb_xfer_device_recv` | **H2D 接收**：为 Host→Device 预投一块 dest SG |
+
+| **小消息（同步拷贝）** | `ax_usb_xfer_device_send_frame` | 发 CTRL/DBG/copy DATA 帧，返回即完成拷贝 |
+
+| **状态查询** | `ax_usb_xfer_device_is_online` | 查询当前链路是否在线 |
+
+  
+
+### 1.1 两种数据语义（先理解再用）
+
+  
+
+| | frame 通路 | xfer 通路 |
+
+|---|---|---|
+
+| 接口 | `send_frame` / `frame_received` 回调 | `submit` / `recv` |
+
+| 语义 | **同步拷贝** | **异步零拷贝借用** |
+
+| buffer 所有权 | 函数返回后调用方可立即释放 | driver 借用 SG 直到 `complete` 回调 |
+
+| 适用 | 小消息（CTRL/DBG）、控制协商、小 DATA | 大块 SG 传输（可达 MiB 级） |
+
+| wire 是否带 header | 是（32B frame header） | 否（纯 payload 字节流） |
+
+  
+
+> **关键**：`submit`/`recv` 提交成功后，在 `complete` 回调触发前，**不得释放或改写 SG**；`send_frame` 则拷贝完即返回，无此约束。两者不可混用。
+
+  
+
+### 1.2 共享数据结构
+
+  
+
+```c
+
+/* include/ax_usb_xfer.h —— source（D2H 发送）与 dest（H2D 接收）同构 */
+
+struct ax_usb_xfer_source {          /* submit 用 */
+
+    struct scatterlist *sg;          /* 业务数据 SG，调用方提供并持有 */
+
+    u32                 nents;        /* SG 段数（上限 4096） */
+
+    u64                 total_len;    /* 本笔总字节数（与对端协商一致） */
+
+    void (*release)(void *priv);                        /* 释放回调 */
+
+    void (*complete)(void *priv, int status, u64 actual); /* 完成回调 */
+
+    void  *priv;                      /* 透传给回调的业务上下文 */
+
+};
+
+  
+
+struct ax_usb_xfer_dest { /* recv 用；字段与 source 完全一致 */ };
+
+```
+
+  
+
+---
+
+  
+
+## 2. 接口详解
+
+  
+
+### 2.1 `ax_usb_xfer_device_register_client`
+
+  
+
+```c
+
+struct ax_usb_xfer_device_client_ops {
+
+    int  (*frame_received)(void *priv, u32 type, u32 port,
+
+                           const void *payload, u32 payload_len);
+
+    void (*link_changed)(void *priv, bool online);
+
+};
+
+  
+
+int ax_usb_xfer_device_register_client(
+
+        const struct ax_usb_xfer_device_client_ops *ops, void *priv);
+
+```
+
+  
+
+**作用**：注册业务层唯一 client，接收 frame 通路数据与链路状态变化。
+
+  
+
+**参数**：
+
+- `ops`：回调表，两个回调**都不能为空**（否则 `-EINVAL`）。
+
+- `priv`：业务上下文，原样透传给两个回调的第一个参数。
+
+  
+
+**回调语义**：
+
+  
+
+| 回调 | 触发时机 | 注意 |
+
+|---|---|---|
+
+| `frame_received(priv, type, port, payload, len)` | 收到 **frame 通路**完整帧（CTRL/DBG/copy DATA） | `payload` 是**借用指针，仅回调期间有效**，需留用必须自行拷贝。**xfer 大块数据不走此回调** |
+
+| `link_changed(priv, online)` | 链路上线 / 下线 | `online=false` 后所有在途 xfer 会被终止并回调 `complete(-ESHUTDOWN)` |
+
+  
+
+**返回**：`0` 成功；`-EINVAL` 回调缺失；`-EBUSY` 已有 client（单 client 模型）；`-ENOMEM`。
+
+  
+
+---
+
+  
+
+### 2.2 `ax_usb_xfer_device_unregister_client`
+
+  
+
+```c
+
+void ax_usb_xfer_device_unregister_client(
+
+        const struct ax_usb_xfer_device_client_ops *ops, void *priv);
+
+```
+
+  
+
+**作用**：注销 client。`ops` 与 `priv` 须与注册时一致才生效。
+
+  
+
+**保证**：内部 `synchronize_srcu`，函数返回后 `frame_received` / `link_changed` 保证不再被调用，可安全释放 `priv` 指向的资源。
+
+  
+
+---
+
+  
+
+### 2.3 `ax_usb_xfer_device_recv` —— H2D 接收（重点）
+
+  
+
+```c
+
+int ax_usb_xfer_device_recv(u32 port, u32 transfer_id,
+
+                            const struct ax_usb_xfer_dest *dest);
+
+```
+
+  
+
+**作用**：Device 作为**接收端**，为一笔 H2D 传输**预投接收窗口**，等待 Host 发来的 payload 落入 `dest->sg`。
+
+  
+
+**参数**：
+
+- `port`：业务路由端口（见 §4 概念说明），须避开保留值。
+
+- `transfer_id`：本笔传输标识，非零，且与 Host 侧协商一致（见 §4）。
+
+- `dest`：接收目标。`sg`/`nents`/`total_len`/`release` 必填；`total_len` 为本笔总长。
+
+  
+
+**返回码**：
+
+  
+
+| 返回 | 条件 |
+
 |---|---|
-| U0 | 正常工作状态，可以进行数据传输 |
-| U1 | 浅度链路低功耗状态，恢复延迟较小 |
-| U2 | 深度链路低功耗状态，恢复延迟大于 U1 |
-| U3 | 最深的链路低功耗状态，通常对应 USB Suspend |
-| SS.Inactive | 链路异常或训练失败状态，不属于正常低功耗状态 |
 
-> **说明：** U1/U2 是链路级低功耗状态，不等同于 USB Function Suspend。U3 通常与 USB Suspend 对应，但链路状态和设备功能状态在概念上仍有区别。
+| `0` | 预投成功，后续经 `dest->complete` 通知结果 |
+
+| `-EINVAL` | 参数为空 / `transfer_id == 0` / `port` 为保留值 |
+
+| `-EMSGSIZE` | `dest->nents > 4096` |
+
+| `-ENOTCONN` | 链路不在线 |
+
+| `-EOPNOTSUPP` | **对端未声明 CAP_H2D**（Host 侧尚未就绪支持 H2D） |
+
+| `-ENOSPC` | 在途 xfer 已达上限（8 笔） |
+
+| `-EEXIST` | 该 `transfer_id` 在本端 TX/RX 任一表已在册 |
+
+| `-EAGAIN` | 提交过程中链路重连（generation 变化），重试即可 |
+
+| `-ENOMEM` | 分配失败 |
+
+  
+
+**buffer 生命周期**：返回 `0` 后 driver 借用 `dest->sg`，直到回调（顺序固定）：
+
+  
+
+```text
+
+release(priv)                    ← 先：可在此 unpin / unmap SG
+
+complete(priv, status, actual)   ← 后：报告结果与实收字节
+
+```
+
+  
 
 ---
 
-## 3. 插入检测
+  
 
-USB 3.x 的插入检测需要区分 Device 侧和 Host 侧。
+### 2.4 `ax_usb_xfer_device_submit` —— D2H 发送
 
-### 3.1 Device 侧
+  
 
-Device 主要通过 `VBUS Valid` 判断 Host 是否存在。
+```c
 
-基本流程如下：
+int ax_usb_xfer_device_submit(u32 port, u32 transfer_id,
 
-```text
-VBUS Valid
-    -> Device 判断 Host 已连接
-    -> 使能 SuperSpeed PHY
-    -> 打开 Rx Termination
-    -> 等待 Host 发起 Rx.Detect / Polling
+                              const struct ax_usb_xfer_source *source);
+
 ```
 
-VBUS 表示总线上存在 Host，同时决定 Device 是否允许连接到总线。
+  
 
-### 3.2 Host 侧
+**作用**：Device 作为**发送端**，向 Host 提交一笔 D2H 大块传输。长度取自 `source->total_len`，driver 内部自动选择单包 / 大包 rolling-window 路径，业务层无需区分。
 
-Host 是 VBUS 的提供者，因此不能通过 VBUS 判断 Device 是否插入。
+  
 
-Host 主要通过 PHY 的 `Rx.Detect` 检测对端的 Receiver Termination。
+**参数**：同 `recv`，方向相反（`source` 提供待发数据 SG）。
 
-基本流程如下：
+  
 
-```text
-Host 执行 Rx.Detect
-    -> 检测到 Device 的 Rx Termination
-    -> 进入 Polling
-    -> 完成链路训练
-    -> 进入 U0
-```
+**返回码**：`0` 成功；`-EINVAL`（参数 / `transfer_id==0` / 保留 port）；`-ENOTCONN`（不在线）；以及内部 `-ENOSPC` / `-EEXIST` / `-ENOMEM`。
 
-### 3.3 Type-C 场景
+> D2H 为既有能力（两端已声明 BIDIR），此接口**不检查 CAP**。
 
-在 USB Type-C 场景下，物理插入还可以通过 `CC Attach` 检测。
+  
 
-`CC Attach/Detach` 与 USB 3.x PHY 的 `Rx.Detect` 属于不同层面的机制：
+**buffer 生命周期**：与 `recv` 一致（`release` → `complete`）。提交失败（返回非 0）时 source 所有权**不转移**，回调不触发，调用方自行释放。
 
-- CC 用于连接器和端口层面的连接检测；
-- Rx.Detect 用于 SuperSpeed 链路层面的对端检测。
+  
 
 ---
 
-## 4. 拔出检测
+  
 
-拔出检测不能简单概括为同时依赖 PHY Detect 和 VBUS。Host 与 Device 的检测方式存在差异。
+### 2.5 完成回调 `complete(priv, status, actual)` 语义
 
-### 4.1 Device 侧
+  
 
-Device 可以通过以下信息判断连接断开：
+`submit` / `recv` 两者共用同一套完成语义：
 
-- VBUS 消失；
-- Type-C 场景下发生 CC Detach；
-- PHY 或链路状态异常；
-- 对端终端消失。
+  
 
-其中，`VBUS Loss` 是 Device 判断 Host 或 Hub 已不存在的重要依据。
+| status | 含义 | actual |
 
-### 4.2 Host 侧
+|---|---|---|
 
-由于 Host 自身提供 VBUS，因此 VBUS 通常不能作为 Host 判断 Device 拔出的依据。
+| `0` | 成功，`actual == total_len` | 实传字节数 |
 
-Host 主要通过以下信息识别拔出：
+| `-ECANCELED` | 被 `cancel` 主动取消 | 已传字节 |
 
-- PHY 检测到 Receiver Termination 消失；
-- 链路错误或 Recovery 失败；
-- Hub 或 Port 状态变化；
-- Type-C 场景下发生 CC Detach。
+| `-ECONNABORTED` | 收到对端 ABORT | 已传字节 |
 
-### 4.3 U3 状态下的拔出检测
+| `-ETIMEDOUT` | 5 秒超时 | 已传字节 |
 
-U3 状态下没有正常的高速数据活动，因此不能依赖普通数据包判断连接是否存在。
+| `-EPROTO` | 短读 / 协议错（H2D 接收侧） | 已传字节 |
 
-系统需要保留必要的低功耗检测能力，并结合以下信息识别拔出：
+| `-ESHUTDOWN` | 链路断开 | 已传字节 |
 
-- PHY 低功耗连接检测；
-- Port 状态变化；
-- VBUS 状态；
-- Type-C CC 状态。
-
-Host 和 Device 的具体检测依据不同，不能统一归纳为必须同时依赖 PHY Detect 和 VBUS。
+  
 
 ---
 
-## 5. U1/U2 链路低功耗
+  
 
-U1/U2 是 USB 3.x 的链路级低功耗状态，主要用于在链路空闲时降低 PHY 功耗。
+### 2.6 `ax_usb_xfer_device_send_frame` —— 小消息同步发送
 
-### 5.1 进入 U1/U2
+  
 
-链路双方都可以发起进入 U1/U2 的请求。
+```c
 
-基本流程如下：
+int ax_usb_xfer_device_send_frame(u32 type, u32 port, const void *buf, u32 len);
 
-```text
-链路处于 U0
-    -> 链路空闲
-    -> 一端发送 LGO_U1 或 LGO_U2
-    -> 对端接受请求
-    -> 双方进入 U1 或 U2
 ```
 
-对端可以根据自身状态、延迟要求或当前事务选择接受或拒绝。
+  
 
-### 5.2 软件与硬件分工
+**作用**：发送一帧 CTRL / DBG / copy DATA。**返回即完成拷贝**，`buf` 可立即释放 —— 这是它与 `submit` 的根本区别。
 
-驱动通常负责配置：
+  
 
-- 是否允许进入 U1/U2；
-- U1/U2 Exit Latency；
-- 链路空闲定时器；
-- 链路电源管理策略；
-- Device 或 Port 的相关能力。
+**参数**：
 
-配置完成后，通常由控制器硬件自动管理状态切换：
+- `type`：`AX_USB_XFER_PIPE_TYPE_CTRL(0)` / `_DATA(1)` / `_DBG(2)`。
 
-```text
-Driver 配置 LPM Policy 和 Idle Timer
-    -> Bus 空闲达到设定时间
-    -> Controller 自动发送 LGO_U1/U2
-    -> 对端接受
-    -> 进入 U1/U2
-```
+- `port`：业务端口（须避开 `DYNAMIC_PORT`）。
 
-正常运行过程中，软件通常不需要逐次参与 U1/U2 的进入和退出。
+- `buf` / `len`：待发数据。长度上限按 type：CTRL/DBG 各 1024 字节，DATA 约 2 MiB。
 
-### 5.3 退出 U1/U2
+  
 
-当任意一方有数据需要发送时，可以发起退出。
+**返回**：`0` 成功；`-EINVAL`（参数非法）；`-EMSGSIZE`（超上限）；`-ENOSPC`（发送池满，不写半帧）；`-ENOTCONN`（不在线）。
 
-```text
-U1/U2
-    -> 任意一端发起 LFPS
-    -> PHY 恢复
-    -> Recovery
-    -> U0
-```
+  
 
-U1 保留的 PHY 功能更多，因此退出速度更快；U2 关闭的模块更多，因此恢复时间更长。
+> **业务层的 OFFER/ACK 协商消息，就用本接口发**（`type=CTRL` + 业务 port），对端从 `frame_received` 收。
+
+  
 
 ---
 
-## 6. U3 Suspend
+  
 
-U3 是 USB 3.x 最深的链路低功耗状态，通常与 USB Suspend 对应。
+### 2.7 `ax_usb_xfer_device_is_online`
 
-需要区分两个概念：
+  
 
-- **U3**：USB 3.x 链路状态；
-- **Function Suspend**：USB 设备或功能层面的状态。
+```c
 
-两者密切相关，但并非完全相同。
+bool ax_usb_xfer_device_is_online(void);
 
-### 6.1 进入 U3
-
-U3 只能由链路的 Downstream Port 发起。
-
-在 Host 直连 Device 的场景下，通常由 Host 或 Root Port 发起：
-
-```text
-Host / Downstream Port
-    -> 发送 LGO_U3
-    -> Device / Upstream Port 接受
-    -> 双方进入 U3
 ```
 
-Device 不能自行决定让整条链路进入 U3。
+  
 
-### 6.2 U3 下的 PHY 状态
+**作用**：查询当前 gadget 链路是否在线。轻量，可随时调用。返回 `true` 表示已枚举且可收发。
 
-进入 U3 后，PHY 可以关闭大部分高功耗模块，例如：
-
-- 高速发送电路；
-- 高速接收电路；
-- CDR；
-- 均衡模块；
-- PLL；
-- 大部分数字链路逻辑。
-
-具体关闭范围取决于控制器和 PHY 的实现。
-
-同时，必须保留必要的低功耗检测能力，包括：
-
-- LFPS 检测；
-- 唤醒逻辑；
-- 连接状态变化检测；
-- 必要的 VBUS、CC 或 Port Event 检测。
-
-因此，U3 下可以关闭 PHY 的大部分功能，但不能关闭 LFPS 唤醒和连接事件检测所依赖的 Always-On 电路。
+  
 
 ---
 
-## 7. Host Resume
+  
 
-当 Host 需要恢复链路时，由 Downstream Port 发起 U3 Exit。
+## 3. 契约（driver 不替业务层兜底的部分）
 
-基本流程如下：
+  
 
-```text
-U3
-    -> Host 发送 LFPS
-    -> Device 检测到 LFPS
-    -> Device 恢复 PLL、CDR、Rx、Tx 等 PHY 模块
-    -> 双方完成 U3 Exit 相关握手
-    -> 进入 Recovery
-    -> 恢复到 U0
-```
+1. **`transfer_id` 由业务层维护**：非零、本端 TX/RX 两表内唯一、**H2D 两端必须一致**。driver 校验非零与 dedup，但**无法校验两端一致** —— 这是业务层协商责任。
 
-Device 在检测到 LFPS 后恢复 PHY，但不会单方面直接进入 U0。链路双方仍需完成对应的退出和恢复流程。
+2. **同方向单笔串行**：xfer 数据面是纯字节流，同一方向同一时刻只能有一笔在传，否则字节交错损坏。多笔请排队，勿并发提交同方向。
+
+3. **异步 SG 在 `complete` 前保持稳定**：不释放、不改写、不解除 pin/map。
+
+4. **H2D 时序**：须 Device 先 `recv` 预投，Host 再发数据 —— 这是 ACK 握手的意义，勿让 Host 抢跑。
+
+  
 
 ---
 
-## 8. Device Remote Wake
+  
 
-Remote Wake 是由 Device 侧发起的链路唤醒。
+## 4. 核心概念：port 与 transfer_id
 
-基本流程如下：
+  
+
+二者正交，不可互相替代：
+
+  
 
 ```text
-U3
-    -> Device 产生远程唤醒事件
-    -> Device 发送 LFPS
-    -> Host 或 Hub 检测到 LFPS
-    -> Host 或 Hub 恢复 PHY 和链路逻辑
-    -> 双方进入 Recovery
-    -> 返回 U0
-    -> Host 软件处理 Remote Wake 事件
+
+port         = "这是给谁的"   —— 业务路由地址（哪个业务流）
+
+transfer_id  = "这是哪一笔"   —— 传输实例身份（该业务流的哪一次搬运）
+
 ```
 
-Device 发起 Remote Wake 通常需要满足以下条件：
+  
 
-- Device 支持 Remote Wake；
-- Host 已允许 Device 使用 Remote Wake；
-- 当前 Device 或 Function 处于允许唤醒的 Suspend 状态；
-- 唤醒信号满足规范要求的时序。
+- **同一个 port 上先后有多笔传输**，各笔 `transfer_id` 不同：
 
-如果链路中存在 USB Hub，Remote Wake 会通过 Hub 逐级向上游传播，而不是直接到达 Root Port。
+  
+
+  ```text
+
+  port=5, transfer_id=100   ← 第一笔
+
+  port=5, transfer_id=101   ← 第二笔
+
+  ```
+
+  
+
+- **数据面不读这两个值**：xfer endpoint 上只有纯 payload，收敛靠 `endpoint + total_len`。`port`/`transfer_id` 只存在于接口参数与 SERVICE ABORT 控制消息中，正常收发不上总线。
+
+- **保留 port**（业务须避开）：`AX_USB_XFER_DYNAMIC_PORT = 0xffffffff`、`AX_USB_XFER_SERVICE_PORT = 0xfffffffe`。
+
+  
 
 ---
 
-## 9. 流程汇总
+  
 
-### 9.1 插入与链路初始化
+## 5. H2D + D2H 交互调用图
 
-#### Device 侧
+  
+
+### 5.1 H2D（Host → Device）：业务层协商 + driver 搬运
+
+  
 
 ```text
-VBUS Valid
-    -> 使能 PHY
-    -> 打开 Rx Termination
-    -> 等待 Host 发起链路检测
+
+   Host 业务层            Host driver         │  Device driver         Device 业务层
+
+                                              │
+
+① 生成 transfer_id                            │
+
+② send_frame(CTRL, port,  ───► xfer_out ──────┼──► frame_received ───►  ③ 收 OFFER
+
+   OFFER{id,port,total_len})                  │      (CTRL)              备好 dest SG
+
+                                              │                         ④ ax_usb_xfer_device_recv
+
+                                              │                    ◄───    (port, id, dest)
+
+                                              │                            预投 xfer_out 接收窗口
+
+                                              │                         ⑤ send_frame(CTRL, port, ACK)
+
+⑦ 收 ACK  ◄─────────────────  frame_received ◄┼──── xfer_out ◄──────────
+
+   ax_usb_xfer_host_submit                    │
+
+   (host, id, port, src)                      │
+
+⑧ ══════ payload SG ═══════►  xfer_out ═══════┼═══► 预投的 OUT request 收数据
+
+                                              │      actual += req->actual
+
+                                              │      actual == total_len ?
+
+                                              │                         ⑨ dest->complete(0, actual)
+
+⑩ src->complete(0, actual) ◄─                 │                            release(priv)
+
 ```
 
-#### Host 侧
+  
+
+**要点**：
+
+- ①②⑤ 走 **frame 通路**（`send_frame` / `frame_received`），协商 `transfer_id`/`port`/`total_len`。
+
+- ④ Device 先预投（`recv`），⑤ ACK 通知 Host 就绪，⑦ Host 才 `submit` —— **握手消除时序竞态**，避免 OUT 数据到达时无人接收导致 NAK。
+
+- ⑧ 走 **xfer 通路**（`xfer_out` endpoint），wire 上纯 payload，靠 `actual == total_len` 收敛。
+
+  
+
+### 5.2 D2H（Device → Host）：方向对称
+
+  
 
 ```text
-Rx.Detect
-    -> Polling / LFPS
-    -> Equalization
-    -> Configuration
-    -> U0
+
+   Device 业务层         Device driver        │  Host driver          Host 业务层
+
+                                              │
+
+① 生成 transfer_id                            │
+
+② send_frame(CTRL, port, ───► service ────────┼──► frame_received ───► ③ 收 OFFER
+
+   OFFER{id,port,total_len})                  │                        备好 dest SG
+
+                                              │                        ④ ax_usb_xfer_host_recv
+
+                                              │                   ◄───    (host, id, port, dest)
+
+                                              │                           预投 xfer_in 接收窗口
+
+⑦ 收 ACK ◄──── frame_received ◄───────────────┼─── service ◄────────── ⑤ send_frame(CTRL, port, ACK)
+
+   ax_usb_xfer_device_submit                  │
+
+   (port, id, source)                         │
+
+⑧ ═══ payload SG ═══► xfer_in ════════════════┼═══► 预投的 IN URB 收数据
+
+                                              │      actual == total_len ?
+
+⑩ source->complete(0) ◄─                      │                        ⑨ dest->complete(0, actual)
+
 ```
 
-### 9.2 U1/U2 进入与退出
+  
 
-#### 进入 U1/U2
+**对称性**：D2H 与 H2D 完全镜像 —— 发送端 `submit`（提供 source），接收端 `recv`（提供 dest），协商与握手流程一致，仅方向与 endpoint（`xfer_in` vs `xfer_out`）不同。
+
+  
+
+### 5.3 异常收敛（任一方向通用）
+
+  
 
 ```text
-U0
-    -> 链路空闲
-    -> 任意一端发送 LGO_U1/U2
-    -> 对端接受
-    -> U1/U2
+
+某端 timeout / IO error / cancel
+
+   │
+
+   ├─► 本地：终止本端 xfer 对象、kill/dequeue 在途请求
+
+   │
+
+   └─► service endpoint 发 ABORT{transfer_id, status}
+
+          │
+
+          ▼
+
+       对端 frame_received → 按 transfer_id 在 TX/RX 表定位那一笔
+
+          │
+
+          ├─► 终止对应 xfer 对象
+
+          ├─► dequeue / kill 其在途请求
+
+          └─► complete(status, actual) + release(priv)
+
 ```
 
-#### 退出 U1/U2
+  
+
+> ABORT 靠 `transfer_id` 指认"清理哪一笔"——这是它在异常路径中不可替代的作用。
+
+  
+
+---
+
+  
+
+## 6. 调用速查
+
+  
 
 ```text
-U1/U2
-    -> 任意一端产生数据发送需求
-    -> 发起 LFPS
-    -> Recovery
-    -> U0
-```
 
-### 9.3 U3 Suspend 与 Host Resume
+初始化:   register_client(ops, priv);  等 link_changed(online=true)
 
-#### 进入 U3
+  
 
-```text
-Host / Downstream Port
-    -> 发送 LGO_U3
-    -> Device 接受
-    -> U3
-    -> PHY 大部分模块关闭
-    -> 保留 LFPS 和连接事件检测
-```
+H2D 收:   [OFFER 到达 → frame_received] 备 dest SG
 
-#### Host Resume
+           ax_usb_xfer_device_recv(port, id, dest);   // 拿 0
 
-```text
-U3
-    -> Host 发送 LFPS
-    -> Device 恢复 PHY
-    -> Recovery
-    -> U0
-```
+           ax_usb_xfer_device_send_frame(CTRL, port, ACK);
 
-### 9.4 Device Remote Wake
+           ... 等 dest->complete(status, actual)
 
-```text
-U3
-    -> Device 产生远程唤醒事件
-    -> Device 在获得授权后发送 LFPS
-    -> Host / Hub 唤醒
-    -> Recovery
-    -> U0
-```
+  
 
-### 9.5 拔出检测
+D2H 发:   [OFFER 已发, ACK 到达]
 
-#### Device 侧
+           ax_usb_xfer_device_submit(port, id, source);
 
-```text
-VBUS Loss
-    / CC Detach
-    / PHY 或链路状态变化
-        -> 判断连接断开
-```
+           ... 等 source->complete(status, actual)
 
-#### Host 侧
+  
 
-```text
-Receiver Termination 消失
-    / CC Detach
-    / PHY 或链路状态变化
-        -> 判断 Device 拔出
+小消息:   ax_usb_xfer_device_send_frame(CTRL/DBG, port, buf, len);  // 同步
+
+  
+
+下线:     unregister_client(ops, priv);   // 返回后回调保证停止
+
 ```
