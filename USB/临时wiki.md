@@ -30,7 +30,7 @@
 
 - 第 5 节：调用速查
 
-- 第 6 节：完整调用示例（worked example，可照抄的 C 代码）
+- 第 6 节：xfer 数据通路时序图（驱动内部，D2H tx 为例）
 
   
 
@@ -1228,189 +1228,77 @@ D2H 收:   收到 OFFER(local_tag)（frame_received） -> Host 分配 id -> 备
 
   
 
-## 6. 完整调用示例（worked example）
+## 6. xfer 数据通路时序图（驱动内部）
 
   
 
-> 本节把第 4 节的时序落到真实函数调用上，给出可照抄的端到端 C 序列。**OFFER / ACK 的消息结构由业务层自定义**，下面仅为示例；驱动只把它当普通 CTRL frame 搬运。示例里 `axdemo_` 前缀均为业务侧代码，`ax_usb_xfer_` 前缀才是驱动导出接口。
-
-  
-
-### 6.1 示例约定
-
-  
-
-**自定义协商消息**（走 frame 通路 CTRL，业务层自行定义）：
-
-  
-
-```c
-
-enum {
-
-        AXDEMO_OFFER = 1,
-
-        AXDEMO_ACK   = 2,
-
-};
-
-  
-
-struct axdemo_offer {
-
-        u32 msg;          /* AXDEMO_OFFER */
-
-        u32 transfer_id;  /* H2D: Host 已分配; D2H: 0（待 Host 分配） */
-
-        u32 local_tag;    /* D2H: Device 本地标识; H2D: 0 */
-
-        u32 port;         /* 业务 port */
-
-        u64 total_len;    /* 本笔字节数 */
-
-};
-
-  
-
-struct axdemo_ack {
-
-        u32 msg;          /* AXDEMO_ACK */
-
-        u32 transfer_id;  /* 最终生效的 id（一律 Host 分配） */
-
-        u32 local_tag;    /* D2H: 原样回带以匹配 OFFER; H2D: 0 */
-
-        u32 port;
-
-};
-
-```
-
-  
-
-**SG 辅助**（业务自备，非驱动接口）：`axdemo_build_sg(total_len, &nents)` 按长度分配页并建好 `scatterlist` 表，`axdemo_free_sg(sg, nents)` 释放。发送方需在 SG 里填好待发数据，接收方给空 SG 等待落地。
-
-  
-
-**上下文约定**：`frame_received` 可能在原子上下文触发。`send_frame` 是同步拷贝，可在回调内直接调用；而 `recv` / `submit` 及其 SG 分配建议调度到工作队列执行。为聚焦调用顺序，下文把提交逻辑写成 `axdemo_arm_*()` 辅助函数，业务层可按需放进 workqueue。
-
-  
-
-**成功判据**：`complete(priv, status, actual)` 中 `status == 0` 即成功（此时 `actual == total_len`）；非 0 为异常，`actual` 是已传字节。回调顺序恒为先 `complete` 后 `release`（见 1.5）。
-
-  
-
----
-
-  
-
-### 6.2 D2H xfer tx 通路：驱动内部调用链（rolling window）
-
-  
-
-只画 xfer 数据面：从 `ax_usb_xfer_device_submit` 入口深入驱动内部，展示一笔大块 D2H 发送如何被切成 chunk、经 rolling-window 三槽泵送到 DWC3、逐笔完成后补包收敛。此前的 OFFER/ACK 业务协商见 6.4，不在本图。
+> 以 D2H（Device 发送 → Host 接收）为例，画 xfer 大块数据在**驱动内部**的处理时序：左 Device 发送侧、右 Host 接收侧，自上而下为时间顺序，箭头为数据 / 调用流向。只画 xfer 数据面；业务层如何协商 `transfer_id`（如 OFFER/ACK 之类）属应用层约定，不在本图。
 
   
 
 ```text
 
-只画 xfer 数据面。rolling window：submit 预分配 window 个 usb_request 作为固定槽
+rolling window：submit 预分配 window 个 usb_request 作为固定槽（默认 3），数据按
 
-（默认 3），total_len 按 2MiB / 84 段 / mps 动态切成任意多个 chunk，由这几个槽
-
-轮流复用承载——不是把数据切成 3 份。
+2MiB / 84 段 / mps 切成任意多个 chunk，由这几个槽轮流复用——不是把数据切成 3 份。
 
   
 
-［提交］
+Device 侧（发送 / tx，驱动内部）                    Host 侧（接收 / rx）
 
-业务层 ax_usb_xfer_device_submit(transfer_id, port, source)      // 入口校验
+------------------------------                      ------------------
 
-  └─ ux_device_tx_submit(cs, port, id, total_len, source)
+      ax_usb_xfer_device_submit(id, port, source)
 
-       · 校验对端 CAP_D2H
+         │ 校验 CAP_D2H
 
-       · kzalloc xfer；window = clamp(ux_large_sw_window, 1, 3)
+         ▼
 
-       · 预分配 window 个 req：slots[i].req = usb_ep_alloc_request()
+      ux_device_tx_submit
 
-       · 挂 large_xfers 链表、查重、ready = true
+         │ · kzalloc xfer；window = clamp(ux_large_sw_window, 1, 3)
 
-       · schedule_work(&xfer->pump_work)                     ──▶ ［泵送］
+         │ · 预分配 window 个 req（rolling 槽，默认 3）
 
-  
+         │ · 挂链、查重、ready = true
 
-［泵送］ tx workqueue
+         │ · schedule_work(pump_work)
 
-ux_device_tx_pump_work           // 轮询 window 个槽，填满所有空闲槽（!active）
+         ▼
 
-  for slot in slots[0 .. window-1]:
+ ┌─▶ ux_device_tx_pump_work          轮询 window 槽，填满每个空闲槽
 
-    if slot->active || submitted == total_len:  skip
+ │      │ offset = submitted
 
-    offset = xfer->submitted
+ │      │ ux_large_chunk_span     → chunk 长（≤2MiB / ≤84段；非末段 ALIGN_DOWN mps）
 
-    ├─ ux_large_chunk_span(xfer, offset, mps)           // 算这一笔 chunk 长度
+ │      │ ux_device_tx_slot_build → 切 source SG 视图入 slot->sgt
 
-    │    · 累计到 2 MiB 上限 或 84 段上限 即截断
+ │      │ usb_ep_queue(ep, req) ═══ payload chunk（xfer_in）═══▶  落入预投的 dest SG
 
-    │    · 非末段 ALIGN_DOWN(span, mps)；末段按 remaining 精确 clamp
+ │      │   submitted += len              （多槽并发，逐笔搬运）      （Host 收满一 chunk）
 
-    │    ↳ return payload_len
+ │      ▼
 
-    xfer->submitted += payload_len                      // 推进偏移（预扣）
+ │   ux_device_tx_complete(req)      ◀── DWC3 硬件回调（每笔一次）
 
-    ├─ ux_device_tx_slot_build(slot, offset, payload_len)    // 建该 chunk 的 SG 视图
+ │      │ outstanding-- ；actual += len
 
-    │    · sg_alloc_table
+ │      │ ux_device_tx_slot_reset  → sg_free_table 腾槽（req 复用）
 
-    │    · 从 source SG [offset, offset+len) 切段填入 slot->sgt；slot->active = true
+ └──────┤ schedule_work(pump_work)        空槽补下一 chunk（rolling 滚动）
 
-    ├─ 填 req->sg / num_sgs / length / context / complete
+         │
 
-    │  slot->queued = true; xfer->outstanding++
+         │ 直到 submitted == total_len（所有槽命中 skip → 收敛）
 
-    └─ usb_ep_queue(ep, slot->req, GFP_ATOMIC)          // 提交到 DWC3 底层
+         ▼
 
-  ▶ 一轮最多提交 window 笔 → 多槽并发在途
+      reap_work → ux_device_tx_free
 
-       ┆ DWC3 逐笔把 payload 搬到 xfer_in（Host recv 侧对称接收）
+         │ source.complete(status, actual)  ← 先  ═══ 全部到齐 ═══▶  dest.complete  ← 先
 
-  
-
-［完成 / 补包］
-
-ux_device_tx_complete(ep, req)         // 硬件回调，每笔完成一次
-
-    xfer->outstanding--
-
-    正常：xfer->actual += payload_len；pump = true
-
-    出错/短传：terminal = true；status = err；send_abort
-
-    ├─ ux_device_tx_slot_reset(slot)   // sg_free_table 释放本 chunk；槽置空闲（req 复用）
-
-    └─ if pump: schedule_work(&xfer->pump_work)          ──▶ ［泵送］（空槽补下一 chunk）
-
-       rolling window 滚动：谁完成谁补下一块，直到 submitted == total_len
-
-  
-
-［收尾］ submitted == total_len 且 outstanding == 0（或 timeout / IO / 断链）
-
-  置 terminal，status = 0/err → schedule_work(&transport.reap_work)
-
-  └─ ux_transport_reap_work → list_del(xfer->node) 摘链
-
-       └─ ux_device_tx_free(xfer)
-
-            · cancel timeout/pump work；usb_ep_free_request 各槽 req
-
-            · source.complete(priv, status, actual)   ← 先（SG 仍有效，可读取）
-
-            · source.release(priv)                    ← 后（unpin / free）
-
-            · kfree(xfer)
+         │ source.release(priv)             ← 后                     dest.release   ← 后
 
 ```
 
@@ -1429,501 +1317,3 @@ ux_device_tx_complete(ep, req)         // 硬件回调，每笔完成一次
 4. **chunk 对齐**：非末段 `ALIGN_DOWN(span, mps)` 保证 wire 上中间无 short packet；末段按 `remaining` 精确 clamp，任意长度。故正常每笔 chunk 是 mps 整数倍（SS=1024 / HS=512），接近整 2 MiB。
 
 5. **complete 先、release 后**：收尾统一在 `ux_device_tx_free`，与 1.5 一致。H2D rx 路径完全对称（`ux_device_rx_span` / `ux_device_rx_slot_build` / rx pump，遍历 dest SG、经 xfer_out 预投接收，方向相反）。
-
-  
-
----
-
-  
-
-### 6.3 H2D：Host 发送，Device 接收
-
-  
-
-调用主线：Host 分配 id → OFFER → Device `recv` 预投 → ACK → Host `submit` → 双端 `complete`。
-
-  
-
-**Host 端（发送方，发起者）**
-
-  
-
-```c
-
-/* 第 1 步：链路就绪后，Host 分配 id 并发 OFFER，请求接收方预投 */
-
-static void host_start_h2d(struct ax_usb_xfer_host *host, u32 port, u64 len)
-
-{
-
-        struct axdemo_offer off = {
-
-                .msg         = AXDEMO_OFFER,
-
-                .transfer_id = axdemo_alloc_id(),   /* Host 集中分配，非零 */
-
-                .local_tag   = 0,
-
-                .port        = port,
-
-                .total_len   = len,
-
-        };
-
-        /* send_frame 返回已发送字节数（ssize_t），< 0 为失败 */
-
-        if (ax_usb_xfer_host_send_frame(host, AX_USB_XFER_PIPE_TYPE_CTRL,
-
-                                        port, &off, sizeof(off)) < 0)
-
-                return;                     /* 发送失败，按业务重试 */
-
-        /* 业务记录 (transfer_id, len)，等 frame_received 收 ACK */
-
-}
-
-  
-
-/* 第 2 步：收到 ACK 后再提交数据（ACK 语义 = 对端已 recv 预投就绪） */
-
-static int host_frame_received(void *priv, struct ax_usb_xfer_host *host,
-
-                               u32 type, u32 port,
-
-                               const void *payload, u32 payload_len)
-
-{
-
-        const struct axdemo_ack *ack = payload;
-
-  
-
-        if (type != AX_USB_XFER_PIPE_TYPE_CTRL ||
-
-            payload_len != sizeof(*ack) || ack->msg != AXDEMO_ACK)
-
-                return -ENOENT;             /* 不是本 client 关心的帧 */
-
-  
-
-        axdemo_arm_submit(host, ack->transfer_id, ack->port);  /* 见第 3 步 */
-
-        return 0;
-
-}
-
-  
-
-/* 第 3 步：提交 source SG（建议在 workqueue 内执行） */
-
-static void host_submit_complete(void *priv, int status, u64 actual)
-
-{
-
-        /* status==0 即成功；本端为发送方，不校验数据 */
-
-}
-
-static void host_submit_release(void *priv) { axdemo_free_sg(...); }
-
-  
-
-static void axdemo_arm_submit(struct ax_usb_xfer_host *host, u32 id, u32 port)
-
-{
-
-        u32 nents;
-
-        u64 len = ...;                      /* 发起时已按 id 记录的本笔长度 */
-
-        struct ax_usb_xfer_source src = {
-
-                .sg        = axdemo_build_sg(len, &nents),  /* 已填好待发数据 */
-
-                .nents     = nents,
-
-                .total_len = len,
-
-                .complete  = host_submit_complete,
-
-                .release   = host_submit_release,
-
-                .priv      = ...,
-
-        };
-
-        int ret = ax_usb_xfer_host_submit(host, id, port, &src);
-
-        if (ret) {                          /* 提交失败：所有权未转移，自行释放 */
-
-                axdemo_free_sg(src.sg, nents);
-
-                return;
-
-        }
-
-        /* 成功：SG 交由驱动借用，直到 host_submit_complete/release */
-
-}
-
-```
-
-  
-
-**Device 端（接收方）**
-
-  
-
-```c
-
-/* 收到 OFFER：先 recv 预投，再回 ACK —— 顺序不可颠倒 */
-
-static int dev_frame_received(void *priv, u32 type, u32 port,
-
-                              const void *payload, u32 payload_len)
-
-{
-
-        const struct axdemo_offer *off = payload;
-
-  
-
-        if (type != AX_USB_XFER_PIPE_TYPE_CTRL ||
-
-            payload_len != sizeof(*off) || off->msg != AXDEMO_OFFER)
-
-                return -ENOENT;
-
-  
-
-        axdemo_arm_recv(off->transfer_id, off->port, off->total_len);
-
-        return 0;
-
-}
-
-  
-
-static void dev_recv_complete(void *priv, int status, u64 actual)
-
-{
-
-        if (status == 0) {
-
-                /* 成功，actual == total_len，此处消费落地的数据 */
-
-        }
-
-}
-
-static void dev_recv_release(void *priv) { axdemo_free_sg(...); }
-
-  
-
-static void axdemo_arm_recv(u32 id, u32 port, u64 len)
-
-{
-
-        u32 nents;
-
-        struct ax_usb_xfer_dest dest = {
-
-                .sg        = axdemo_build_sg(len, &nents),   /* 空 SG 待接收 */
-
-                .nents     = nents,
-
-                .total_len = len,                            /* 必须等于 OFFER */
-
-                .complete  = dev_recv_complete,
-
-                .release   = dev_recv_release,
-
-                .priv      = ...,
-
-        };
-
-        /* 先预投接收窗口 */
-
-        if (ax_usb_xfer_device_recv(id, port, &dest)) {
-
-                axdemo_free_sg(dest.sg, nents);
-
-                return;
-
-        }
-
-        /* 预投成功后，才回 ACK 告知 Host “可以发了” */
-
-        struct axdemo_ack ack = {
-
-                .msg = AXDEMO_ACK, .transfer_id = id, .local_tag = 0, .port = port,
-
-        };
-
-        /* Device 的 send_frame 返回 int，成功为 0 */
-
-        ax_usb_xfer_device_send_frame(AX_USB_XFER_PIPE_TYPE_CTRL,
-
-                                      port, &ack, sizeof(ack));
-
-}
-
-```
-
-  
-
-要点：
-
-  
-
-- **先 recv 后 ACK**：ACK 一旦发出，Host 就会 `submit`，OUT 数据随即到达；若此时 Device 未预投，数据无人接收（契约 1.6 第 4 条）。
-
-- Host `submit` 前必须已收到 ACK；返回 `-EOPNOTSUPP` 表示对端未声明 CAP_H2D，须等两端就绪。
-
-  
-
----
-
-  
-
-### 6.4 D2H：Device 发送，Host 接收
-
-  
-
-与 H2D 的唯一区别在协商：id 仍由 Host 分配，但由 **Device 先发 OFFER 请求**，Host 分配后经 ACK 回带 id；Device 用 `local_tag` 匹配是自己哪一笔 OFFER 的 ACK。
-
-  
-
-**Device 端（发送方，发起者）**
-
-  
-
-```c
-
-/* 第 1 步：生成 local_tag，发 OFFER（不带 id，请求 Host 分配） */
-
-static void dev_start_d2h(u32 port, u64 len)
-
-{
-
-        struct axdemo_offer off = {
-
-                .msg         = AXDEMO_OFFER,
-
-                .transfer_id = 0,                 /* 待 Host 分配 */
-
-                .local_tag   = axdemo_next_tag(), /* 本地唯一，用于匹配 ACK */
-
-                .port        = port,
-
-                .total_len   = len,
-
-        };
-
-        ax_usb_xfer_device_send_frame(AX_USB_XFER_PIPE_TYPE_CTRL,
-
-                                      port, &off, sizeof(off));
-
-        /* 业务记录 (local_tag, len)，等 ACK */
-
-}
-
-  
-
-/* 第 2 步：收 ACK，用 local_tag 认领 id，再 submit */
-
-static int dev_frame_received(void *priv, u32 type, u32 port,
-
-                              const void *payload, u32 payload_len)
-
-{
-
-        const struct axdemo_ack *ack = payload;
-
-  
-
-        if (type != AX_USB_XFER_PIPE_TYPE_CTRL ||
-
-            payload_len != sizeof(*ack) || ack->msg != AXDEMO_ACK)
-
-                return -ENOENT;
-
-        if (!axdemo_claim_tag(ack->local_tag))    /* 匹配自己发出的 OFFER */
-
-                return -ENOENT;
-
-  
-
-        axdemo_arm_submit(ack->transfer_id, ack->port);  /* 见第 3 步 */
-
-        return 0;
-
-}
-
-  
-
-/* 第 3 步：提交 source（建议在 workqueue 内执行） */
-
-static void dev_submit_complete(void *priv, int status, u64 actual)
-
-{
-
-        /* status==0 即成功；本端为发送方，不校验数据 */
-
-}
-
-static void dev_submit_release(void *priv) { axdemo_free_sg(...); }
-
-  
-
-static void axdemo_arm_submit(u32 id, u32 port)
-
-{
-
-        u32 nents;
-
-        u64 len = ...;                      /* 发起时已按 local_tag 记录的本笔长度 */
-
-        struct ax_usb_xfer_source src = {
-
-                .sg        = axdemo_build_sg(len, &nents),  /* 已填好待发数据 */
-
-                .nents     = nents,
-
-                .total_len = len,
-
-                .complete  = dev_submit_complete,
-
-                .release   = dev_submit_release,
-
-                .priv      = ...,
-
-        };
-
-        if (ax_usb_xfer_device_submit(id, port, &src))
-
-                axdemo_free_sg(src.sg, nents);   /* 失败自行释放 */
-
-}
-
-```
-
-  
-
-**Host 端（接收方）**
-
-  
-
-```c
-
-/* 收 OFFER：分配 id → recv 预投 → 回 ACK（带 local_tag + id） */
-
-static int host_frame_received(void *priv, struct ax_usb_xfer_host *host,
-
-                               u32 type, u32 port,
-
-                               const void *payload, u32 payload_len)
-
-{
-
-        const struct axdemo_offer *off = payload;
-
-  
-
-        if (type != AX_USB_XFER_PIPE_TYPE_CTRL ||
-
-            payload_len != sizeof(*off) || off->msg != AXDEMO_OFFER)
-
-                return -ENOENT;
-
-  
-
-        axdemo_arm_recv(host, off->local_tag, off->port, off->total_len);
-
-        return 0;
-
-}
-
-  
-
-static void host_recv_complete(void *priv, int status, u64 actual)
-
-{
-
-        if (status == 0) {
-
-                /* 成功，actual == total_len，消费数据 */
-
-        }
-
-}
-
-static void host_recv_release(void *priv) { axdemo_free_sg(...); }
-
-  
-
-static void axdemo_arm_recv(struct ax_usb_xfer_host *host, u32 tag,
-
-                            u32 port, u64 len)
-
-{
-
-        u32 nents;
-
-        u32 id = axdemo_alloc_id();         /* Host 集中分配 */
-
-        struct ax_usb_xfer_dest dest = {
-
-                .sg        = axdemo_build_sg(len, &nents),
-
-                .nents     = nents,
-
-                .total_len = len,
-
-                .complete  = host_recv_complete,
-
-                .release   = host_recv_release,
-
-                .priv      = ...,
-
-        };
-
-        /* 先预投 */
-
-        if (ax_usb_xfer_host_recv(host, id, port, &dest)) {
-
-                axdemo_free_sg(dest.sg, nents);
-
-                return;
-
-        }
-
-        /* 预投成功后回 ACK，回带 local_tag 让 Device 认领这一笔 */
-
-        struct axdemo_ack ack = {
-
-                .msg = AXDEMO_ACK, .transfer_id = id,
-
-                .local_tag = tag, .port = port,
-
-        };
-
-        ax_usb_xfer_host_send_frame(host, AX_USB_XFER_PIPE_TYPE_CTRL,
-
-                                    port, &ack, sizeof(ack));
-
-}
-
-```
-
-  
-
-要点：
-
-  
-
-- **id 一律 Host 分配**：D2H 里 Device 只出 `local_tag`，真正的 `transfer_id` 由 Host 收到 OFFER 后分配、经 ACK 回带；Device 靠 `local_tag` 对上号。
-
-- **先 recv 后 ACK**：同 H2D，接收窗口必须先于 ACK 就绪。
-
-- `host` 句柄只在 `host_added` 之后、`host_removed` 之前使用（契约 1.6 第 5 条）。
