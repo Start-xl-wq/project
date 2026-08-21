@@ -1304,91 +1304,131 @@ struct axdemo_ack {
 
   
 
-### 6.2 调用时序全景（两通路 + 回调生命周期）
+### 6.2 D2H xfer tx 通路：驱动内部调用链（rolling window）
 
   
 
-一张图把 frame 通路（OFFER/ACK 协商）与 xfer 通路（数据搬运）分层画全，并标出回调上下文与 `complete`→`release` 生命周期。以 H2D 为主线（D2H 仅握手前半段不同，见 6.4）。
+只画 xfer 数据面：从 `ax_usb_xfer_device_submit` 入口深入驱动内部，展示一笔大块 D2H 发送如何被切成 chunk、经 rolling-window 三槽泵送到 DWC3、逐笔完成后补包收敛。此前的 OFFER/ACK 业务协商见 6.4，不在本图。
 
   
 
 ```text
 
-图例  [F] frame 通路：CTRL 帧，send_frame 同步拷贝，返回即完成
+只画 xfer 数据面。rolling window：submit 预分配 window 个 usb_request 作为固定槽
 
-      [X] xfer  通路：bulk 数据，submit/recv 零拷贝借用 SG，直到 complete
+（默认 3），total_len 按 2MiB / 84 段 / mps 动态切成任意多个 chunk，由这几个槽
 
-      (cb) 回调上下文（可能原子：仅解析 + 调度 work）
-
-      (wq) workqueue 上下文（做 SG 分配与 recv/submit 提交）
+轮流复用承载——不是把数据切成 3 份。
 
   
 
-Host 业务层                                  Device 业务层
+［提交］
 
------------                                  -------------
+业务层 ax_usb_xfer_device_submit(transfer_id, port, source)      // 入口校验
 
-register_client / host_added / online        register_client / online
+  └─ ux_device_tx_submit(cs, port, id, total_len, source)
 
-       |                                            |
+       · 校验对端 CAP_D2H
 
-  分配 transfer_id                                  |
+       · kzalloc xfer；window = clamp(ux_large_sw_window, 1, 3)
 
-       |                                            |
+       · 预分配 window 个 req：slots[i].req = usb_ep_alloc_request()
 
-[F] host_send_frame(CTRL, OFFER{id,port,len}) ----> frame_received (cb)
+       · 挂 large_xfers 链表、查重、ready = true
 
-       |                                            |   仅解析 OFFER，schedule_work
+       · schedule_work(&xfer->pump_work)                     ──▶ ［泵送］
 
-       |                                            v
+  
 
-       |                                     axdemo_arm_recv (wq)
+［泵送］ tx workqueue
 
-       |                                       · build_sg（空 SG 待收）
+ux_device_tx_pump_work           // 轮询 window 个槽，填满所有空闲槽（!active）
 
-       |                                       · device_recv(id, port, dest)   ← 先预投
+  for slot in slots[0 .. window-1]:
 
-       |                                       · [F] device_send_frame(CTRL, ACK{id})
+    if slot->active || submitted == total_len:  skip
 
-       |                                            |
+    offset = xfer->submitted
 
-frame_received (cb) <-------- [F] ACK{id} ----------+
+    ├─ ux_large_chunk_span(xfer, offset, mps)           // 算这一笔 chunk 长度
 
-       |   仅解析 ACK，schedule_work                 |
+    │    · 累计到 2 MiB 上限 或 84 段上限 即截断
 
-       v                                            |
+    │    · 非末段 ALIGN_DOWN(span, mps)；末段按 remaining 精确 clamp
 
-axdemo_arm_submit (wq)                              |  dest 就绪，等待数据到达
+    │    ↳ return payload_len
 
-  · build_sg（已填待发数据）                        |
+    xfer->submitted += payload_len                      // 推进偏移（预扣）
 
-  · host_submit(id, port, src)                      |
+    ├─ ux_device_tx_slot_build(slot, offset, payload_len)    // 建该 chunk 的 SG 视图
 
-       |                                            |
+    │    · sg_alloc_table
 
-[X] ============== xfer_out 数据流 =============>   |  驱动借用双方 SG
+    │    · 从 source SG [offset, offset+len) 切段填入 slot->sgt；slot->active = true
 
-       |                                            |
+    ├─ 填 req->sg / num_sgs / length / context / complete
 
-src.complete(status, actual)   ← 先            dest.complete(status, actual)   ← 先
+    │  slot->queued = true; xfer->outstanding++
 
-src.release(priv)              ← 后            dest.release(priv)              ← 后
+    └─ usb_ep_queue(ep, slot->req, GFP_ATOMIC)          // 提交到 DWC3 底层
+
+  ▶ 一轮最多提交 window 笔 → 多槽并发在途
+
+       ┆ DWC3 逐笔把 payload 搬到 xfer_in（Host recv 侧对称接收）
+
+  
+
+［完成 / 补包］
+
+ux_device_tx_complete(ep, req)         // 硬件回调，每笔完成一次
+
+    xfer->outstanding--
+
+    正常：xfer->actual += payload_len；pump = true
+
+    出错/短传：terminal = true；status = err；send_abort
+
+    ├─ ux_device_tx_slot_reset(slot)   // sg_free_table 释放本 chunk；槽置空闲（req 复用）
+
+    └─ if pump: schedule_work(&xfer->pump_work)          ──▶ ［泵送］（空槽补下一 chunk）
+
+       rolling window 滚动：谁完成谁补下一块，直到 submitted == total_len
+
+  
+
+［收尾］ submitted == total_len 且 outstanding == 0（或 timeout / IO / 断链）
+
+  置 terminal，status = 0/err → schedule_work(&transport.reap_work)
+
+  └─ ux_transport_reap_work → list_del(xfer->node) 摘链
+
+       └─ ux_device_tx_free(xfer)
+
+            · cancel timeout/pump work；usb_ep_free_request 各槽 req
+
+            · source.complete(priv, status, actual)   ← 先（SG 仍有效，可读取）
+
+            · source.release(priv)                    ← 后（unpin / free）
+
+            · kfree(xfer)
 
 ```
 
   
 
-读图四个关键点（对应契约 1.5 / 1.6）：
+要点（校正常见误解，均以 `device/ax_usb_xfer_device.c` 源码为准）：
 
   
 
-1. **两通路分层**：协商（OFFER/ACK）走 `[F]` frame 通路 CTRL；数据走 `[X]` xfer 通路 bulk。二者物理独立——`send_frame` 拷贝完即返回，xfer 借用 SG 直到回调。
+1. **三槽是滚动窗口，不是把数据切成 3 份**：`submit` 预分配 `window`（默认 3）个 `usb_request`；`total_len` 按 2MiB / 84 段 / mps 切成**任意多个 chunk**，三槽轮流复用。例如 10 MiB ≈ 切 5 笔 2 MiB chunk，由 3 槽分批消化，绝非只发 6 MiB。
 
-2. **`device_recv` 必须先于 ACK**：Device 在 `(wq)` 里先 `device_recv` 预投，再发 ACK；ACK 语义即“接收窗口已就绪”。顺序颠倒则 Host `submit` 后 OUT 数据无人接收。
+2. **pump 轮询槽，chunk_span 算单笔**：遍历 `window` 个槽的是 `ux_device_tx_pump_work` 的 for 循环；`ux_large_chunk_span` 只对一个 `offset` 算一笔 chunk 的长度。二者别混。
 
-3. **`complete` 先、`release` 后**：数据传完，两端各自先 `complete`（此时 SG 仍有效，可安全读取/校验），后 `release`（释放 SG 与 priv）。
+3. **补包由 complete 驱动**：每笔 `complete` 里 `ux_device_tx_slot_reset` 腾出槽（`sg_free_table` + `active=false`，**req 复用**）并 `schedule_work(pump_work)`；pump 重跑发现空槽且 `submitted < total_len`，用 `offset = submitted` 处的下一 chunk 填充。`submitted == total_len` 后所有槽命中 skip，不再补，自然收敛。
 
-4. **提交移出回调**：`frame_received (cb)` 可能在原子上下文，只做解析 + `schedule_work`；真正的 SG 分配与 `recv`/`submit` 放在 `(wq)` 里执行。`send_frame`（同步拷贝）例外，可在回调内直接调用。
+4. **chunk 对齐**：非末段 `ALIGN_DOWN(span, mps)` 保证 wire 上中间无 short packet；末段按 `remaining` 精确 clamp，任意长度。故正常每笔 chunk 是 mps 整数倍（SS=1024 / HS=512），接近整 2 MiB。
+
+5. **complete 先、release 后**：收尾统一在 `ux_device_tx_free`，与 1.5 一致。H2D rx 路径完全对称（`ux_device_rx_span` / `ux_device_rx_slot_build` / rx pump，遍历 dest SG、经 xfer_out 预投接收，方向相反）。
 
   
 
