@@ -30,7 +30,7 @@
 
 - 第 5 节：调用速查
 
-- 第 6 节：xfer 数据通路时序图（驱动内部，D2H tx 为例）
+- 第 6 节：xfer 数据通路时序图（驱动内部，D2H tx / H2D rx）
 
   
 
@@ -1232,88 +1232,126 @@ D2H 收:   收到 OFFER(local_tag)（frame_received） -> Host 分配 id -> 备
 
   
 
-> 以 D2H（Device 发送 → Host 接收）为例，画 xfer 大块数据在**驱动内部**的处理时序：左 Device 发送侧、右 Host 接收侧，自上而下为时间顺序，箭头为数据 / 调用流向。只画 xfer 数据面；业务层如何协商 `transfer_id`（如 OFFER/ACK 之类）属应用层约定，不在本图。
+> 两张图，覆盖 tx / rx 两个数据方向；每张左右为 **Device / Host 两侧驱动内部**，箭头为数据流向（发送方在左、数据向右）。只画 xfer 数据面；业务层 `transfer_id` 协商属应用层，不在图中。
+
+>
+
+> 看图前先记两侧机制差异：**Device 侧** = 默认 3 个 `usb_request` 槽、`usb_ep_queue`、每槽独立 rolling 补包；**Host 侧** = 4 个 URB（`UX_HOST_XFER_URB_COUNT`）、`usb_submit_urb`、整批 drain 后再续投下一批。两侧都把 `total_len` 按 2MiB / mps / 段数上限切成任意多个 chunk。
+
+  
+
+### 6.1 D2H：Device 发送（tx）══▶ Host 接收（rx）
 
   
 
 ```text
 
-rolling window：submit 预分配 window 个 usb_request 作为固定槽（默认 3），数据按
+Device 侧（发送 / tx）                               Host 侧（接收 / rx）
 
-2MiB / 84 段 / mps 切成任意多个 chunk，由这几个槽轮流复用——不是把数据切成 3 份。
+3 个 req 槽 · usb_ep_queue · 每槽 rolling            4 个 URB · usb_submit_urb · 整批 drain 续投
 
-  
+------------------------------------------          ------------------------------------------
 
-Device 侧（发送 / tx，驱动内部）                    Host 侧（接收 / rx）
+ ax_usb_xfer_device_submit                           ax_usb_xfer_host_recv
 
-------------------------------                      ------------------
+    │ 校验 CAP_D2H；预分配 3 个 req 槽                  │ 校验 xfer_rx_enabled；预分配 4 个 URB
 
-      ax_usb_xfer_device_submit(id, port, source)
+    ▼                                                 ▼
 
-         │ 校验 CAP_D2H
+┌─▶ ux_device_tx_pump_work                          ┌─▶ ux_host_xfer_submit_next
 
-         ▼
+│    │ ux_large_chunk_span      算 chunk 长           │    │ ux_host_xfer_build_slice  建 dest slice
 
-      ux_device_tx_submit
+│    │  ≤2MiB / ≤84 段；非末段 ALIGN_DOWN mps          │    │  ≤2MiB / ≤512 段；非末段 round_down mps
 
-         │ · kzalloc xfer；window = clamp(ux_large_sw_window, 1, 3)
+│    │ ux_device_tx_slot_build  切 source SG 视图      │    ▼
 
-         │ · 预分配 window 个 req（rolling 槽，默认 3）
+│    ▼                                               │  usb_submit_urb(xfer_in)
 
-         │ · 挂链、查重、ready = true
+│  usb_ep_queue(xfer_in) ══ payload chunk（bulk IN）══▶ 收满 → 落入预投的 dest SG
 
-         │ · schedule_work(pump_work)
+│    ▼      （3 槽 / 4 URB 并发在途，逐笔搬运）          │    ▼
 
-         ▼
+│  ux_device_tx_complete   每笔 DWC3 回调              │  ux_host_rx_urb_complete   每笔 URB 回调
 
- ┌─▶ ux_device_tx_pump_work          轮询 window 槽，填满每个空闲槽
+│    │ actual += len；slot_reset 腾槽                  │    │ actual += len；校验 actual == slice_len
 
- │      │ offset = submitted
+└────┘ schedule pump → 空槽补下一 chunk                └────┘ schedule pump → inflight==0 续投下一批
 
- │      │ ux_large_chunk_span     → chunk 长（≤2MiB / ≤84段；非末段 ALIGN_DOWN mps）
+    │   （直到 submitted == total_len）                 │   （直到 actual == total_len）
 
- │      │ ux_device_tx_slot_build → 切 source SG 视图入 slot->sgt
+    ▼                                                 ▼
 
- │      │ usb_ep_queue(ep, req) ═══ payload chunk（xfer_in）═══▶  落入预投的 dest SG
+ reap → ux_device_tx_free                             reap → ux_host_xfer_reap_work
 
- │      │   submitted += len              （多槽并发，逐笔搬运）      （Host 收满一 chunk）
-
- │      ▼
-
- │   ux_device_tx_complete(req)      ◀── DWC3 硬件回调（每笔一次）
-
- │      │ outstanding-- ；actual += len
-
- │      │ ux_device_tx_slot_reset  → sg_free_table 腾槽（req 复用）
-
- └──────┤ schedule_work(pump_work)        空槽补下一 chunk（rolling 滚动）
-
-         │
-
-         │ 直到 submitted == total_len（所有槽命中 skip → 收敛）
-
-         ▼
-
-      reap_work → ux_device_tx_free
-
-         │ source.complete(status, actual)  ← 先  ═══ 全部到齐 ═══▶  dest.complete  ← 先
-
-         │ source.release(priv)             ← 后                     dest.release   ← 后
+    source.complete ← 先 / source.release ← 后          dest.complete ← 先 / dest.release ← 后
 
 ```
 
   
 
-要点（校正常见误解，均以 `device/ax_usb_xfer_device.c` 源码为准）：
+### 6.2 H2D：Host 发送（tx）══▶ Device 接收（rx）
 
   
 
-1. **三槽是滚动窗口，不是把数据切成 3 份**：`submit` 预分配 `window`（默认 3）个 `usb_request`；`total_len` 按 2MiB / 84 段 / mps 切成**任意多个 chunk**，三槽轮流复用。例如 10 MiB ≈ 切 5 笔 2 MiB chunk，由 3 槽分批消化，绝非只发 6 MiB。
+> H2D 须 Device 先 `recv` 预投、Host 再 `submit`（契约 1.6 第 4 条）；下图左右并列不表示左侧先执行。
 
-2. **pump 轮询槽，chunk_span 算单笔**：遍历 `window` 个槽的是 `ux_device_tx_pump_work` 的 for 循环；`ux_large_chunk_span` 只对一个 `offset` 算一笔 chunk 的长度。二者别混。
+  
 
-3. **补包由 complete 驱动**：每笔 `complete` 里 `ux_device_tx_slot_reset` 腾出槽（`sg_free_table` + `active=false`，**req 复用**）并 `schedule_work(pump_work)`；pump 重跑发现空槽且 `submitted < total_len`，用 `offset = submitted` 处的下一 chunk 填充。`submitted == total_len` 后所有槽命中 skip，不再补，自然收敛。
+```text
 
-4. **chunk 对齐**：非末段 `ALIGN_DOWN(span, mps)` 保证 wire 上中间无 short packet；末段按 `remaining` 精确 clamp，任意长度。故正常每笔 chunk 是 mps 整数倍（SS=1024 / HS=512），接近整 2 MiB。
+Host 侧（发送 / tx）                                 Device 侧（接收 / rx）
 
-5. **complete 先、release 后**：收尾统一在 `ux_device_tx_free`，与 1.5 一致。H2D rx 路径完全对称（`ux_device_rx_span` / `ux_device_rx_slot_build` / rx pump，遍历 dest SG、经 xfer_out 预投接收，方向相反）。
+4 个 URB · usb_submit_urb · 整批 drain 续投          3 个 req 槽 · usb_ep_queue · 每槽 rolling
+
+------------------------------------------          ------------------------------------------
+
+ ax_usb_xfer_host_submit                             ax_usb_xfer_device_recv
+
+    │ 校验 CAP_H2D；预分配 4 个 URB                     │ 校验对端 CAP_H2D；预分配 3 个 req 槽
+
+    ▼                                                 ▼
+
+┌─▶ ux_host_tx_submit_next                          ┌─▶ ux_device_rx_pump_work
+
+│    │ ux_host_tx_build_slice  建 source slice        │    │ ux_device_rx_span      算 slice 长
+
+│    │  ≤2MiB / ≤512 段；非末段 round_down mps         │    │  ≤2MiB / ≤84 段；非末段 ALIGN_DOWN mps
+
+│    ▼                                               │    │ ux_device_rx_slot_build  切 dest SG 视图
+
+│  usb_submit_urb(xfer_out) ══ payload（bulk OUT）══▶ usb_ep_queue(xfer_out) 预投 → 收满填 dest SG
+
+│    ▼                                               │    ▼
+
+│  ux_host_tx_urb_complete   每笔 URB 回调            │  ux_device_rx_complete   每笔 DWC3 回调
+
+│    │ actual += len                                  │    │ actual += len；slot_reset 腾槽
+
+└────┘ schedule pump → inflight==0 续投下一批          └────┘ schedule pump → 空槽补下一 slice
+
+    │   （直到 actual == total_len）                    │   （直到 submitted == total_len）
+
+    ▼                                                 ▼
+
+ reap → src.complete ← 先 / src.release ← 后          reap → ux_device_rx_free
+
+                                                        dest.complete ← 先 / dest.release ← 后
+
+```
+
+  
+
+要点（校正常见误解，均以 `device/` `host/` 两侧 .c 源码为准）：
+
+  
+
+1. **Device 三槽是滚动窗口，不是把数据切成 3 份**：`submit` / `recv` 预分配 `window`（默认 3，`clamp(ux_large_sw_window, 1, 3)`）个 `usb_request`；`total_len` 按 2MiB / 84 段 / mps 切成**任意多个 chunk**，三槽轮流复用。例如 10 MiB ≈ 切 5 笔 2 MiB chunk，由 3 槽分批消化，绝非只发 6 MiB。
+
+2. **补包节奏两侧不同**：Device 侧每笔 `complete` 里 `slot_reset` 腾槽并 `schedule pump`，pump 补**该空槽**（每槽独立 rolling）；Host 侧 `urb_complete` 只记账，pump 里 `inflight == 0` 才 `submit_next` 投**下一整批** 4 个 URB。两侧都靠 `submitted` / `actual == total_len` 收敛。
+
+3. **切分对齐**：非末段对齐 mps（Device `ALIGN_DOWN`、Host `round_down`）保证 wire 上中间无 short packet；末段精确 clamp。接收侧据此校验 `actual == slice_len`，不满即 `-EPROTO`。段数上限：Device 84（DWC3 TRB ring）、Host 512（`UX_HOST_XFER_SG_BUDGET`）。
+
+4. **complete 先、release 后**：两侧两方向统一——Device 在 `ux_device_{tx,rx}_free`，Host 经 reap → `put` → release；与 1.5 一致。
+
+5. **H2D 须先 recv 后 submit**：Device 先 `recv` 预投接收窗口、Host 再 `submit`（契约 1.6 第 4 条），否则 OUT 数据到达时 Device 无 preposted receiver。
