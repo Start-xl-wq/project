@@ -1,1357 +1,208 @@
-# AX USB XFER — 驱动对外接口说明
+# AX525 直接启动 U-Boot 调试方法
 
-  
+## 1. 背景
 
-> 面向业务层：本文介绍 USB XFER 驱动 Host / Device 两侧对外提供的接口，便于业务层理解与调用。
+AX525 项目基于 Linux SoC，主要包含以下几个部分：
 
->
+- Kernel
+- U-Boot
+- ROM Code
 
-> - 接口声明：`include/ax_usb_xfer_host.h`、`include/ax_usb_xfer_device.h`
+目前 AX525 工程通常有以下两种启动方式。
 
-> - 数据结构：`include/ax_usb_xfer.h`（`ax_usb_xfer_source` / `ax_usb_xfer_dest`）
+### 1.1 方式一：通过 Boot Wrapper 启动 Kernel
 
-> - 常量定义：`include/ax_usb_xfer_proto.h`（port 保留值、pipe type、能力位等）
+分别编译 Kernel 和 Boot Wrapper 工程，然后通过 Boot Wrapper 启动 Kernel。
 
-> - 驱动源码：`usb/host/ax_usb_xfer_host.c`、`usb/device/ax_usb_xfer_device.c`
+该方式的特点：
 
-  
+- 可以使用 T32 调试器；
+- 支持单步执行；
+- 可以查看 RAM 内容；
+- 可以查看寄存器状态；
+- 便于定位启动流程及运行过程中的问题。
 
-## 目录
+但现有脚本主要用于启动 Kernel，没有提供直接启动 U-Boot 的脚本。
 
-  
+### 1.2 方式二：通过带 ROM Code 的 Bitfile 启动
 
-- 第 1 节：公共概念（两侧通用，务必先读）
+编译 Kernel、U-Boot、RootFS 等组件，生成对应的固件文件，例如：
 
-- 第 2 节：Device 端接口
+- `.bin`
+- `.dtb`
+- 其他相关镜像文件
 
-- 第 3 节：Host 端接口
+然后将这些固件烧录到包含 ROM Code 的 Bitfile 工程中，通过 USB Download 方式启动 AX525。
 
-- 第 4 节：交互调用图（H2D / D2H / 异常）
+该方式的特点：
 
-- 第 5 节：调用速查
+- U-Boot 只能通过该方式启动；
+- 启动流程更接近实际固件启动流程；
+- 不依赖 Boot Wrapper。
 
-- 第 6 节：xfer 数据通路时序图（驱动内部，D2H tx / H2D rx）
-
-  
+但由于该方式本质上是固件烧录流程，通常缺少调试器支持，因此在遇到特定问题或异常场景时，可能不便于进行单步调试、寄存器查看和 RAM 内容分析。
 
 ---
 
-  
+## 2. 问题描述
 
-## 1. 公共概念
+在现有开发流程中：
 
-  
+- 通过方式一可以使用 T32 调试器，但无法直接启动 U-Boot；
+- 通过方式二可以启动 U-Boot，但由于采用固件烧录方式，缺少 T32 等调试手段。
 
-### 1.1 Host 与 Device 的角色差异
-
-  
-
-- **Device 侧为单实例**：接口不带句柄，驱动内部按当前在线 gadget 自动路由。
-
-- **Host 侧为多实例**：每个已枚举的 Device 对应一个 `struct ax_usb_xfer_host *` 句柄；所有收发接口需传入该句柄。句柄经 `host_added` 回调下发、`host_removed` 回调失效。
-
-- **方向命名相对本端**：`submit` 恒为“本端发送”，`recv` 恒为“本端接收”。因此：
-
-  - H2D（Host→Device）= Host `submit` + Device `recv`
-
-  - D2H（Device→Host）= Device `submit` + Host `recv`
-
-  
-
-### 1.2 两种数据语义
-
-  
-
-驱动提供两条独立通路，语义完全不同，不可混用。
-
-  
-
-**frame 通路**（`send_frame` / `frame_received`）
-
-  
-
-- 语义：同步拷贝
-
-- buffer 所有权：函数返回后即可释放
-
-- 适用：小消息（CTRL/DBG）、控制协商、小 DATA
-
-- 传输边界：由 32 字节帧头界定
-
-  
-
-**xfer 通路**（`submit` / `recv`）
-
-  
-
-- 语义：异步零拷贝借用
-
-- buffer 所有权：驱动借用 SG 直到 `complete` 回调
-
-- 适用：大块 SG 传输（可达 MiB 级）
-
-- 传输边界：靠预先协商的 `total_len` 收敛
-
-  
-
-关键约束：`submit` / `recv` 提交成功后，在 `complete` 回调触发前不得释放或改写 SG；`send_frame` 拷贝完即返回，无此约束。
-
-  
-
-### 1.3 数据结构
-
-  
-
-```c
-
-/* include/ax_usb_xfer.h
-
- * source（发送）与 dest（接收）字段完全一致 */
-
-struct ax_usb_xfer_source {
-
-        struct scatterlist *sg;          /* 业务数据 SG，调用方提供并持有 */
-
-        u32                 nents;        /* SG 段数，上限 4096 */
-
-        u64                 total_len;    /* 本笔总字节数，与对端协商一致 */
-
-        void (*release)(void *priv);
-
-        void (*complete)(void *priv, int status, u64 actual);
-
-        void  *priv;                      /* 透传给回调的业务上下文 */
-
-};
-
-  
-
-struct ax_usb_xfer_dest {
-
-        /* 字段与 ax_usb_xfer_source 相同 */
-
-};
-
-```
-
-  
-
-### 1.4 port 与 transfer_id
-
-  
-
-二者正交，不可互相替代：
-
-  
-
-- `port` = “这是给谁的”，业务路由地址（哪个业务流）。
-
-- `transfer_id` = “这是哪一笔”，传输实例身份（该业务流的哪一次搬运）。
-
-  
-
-同一个 port 上先后有多笔传输，各笔 `transfer_id` 不同：
-
-  
-
-```text
-
-port=5, transfer_id=100    第一笔
-
-port=5, transfer_id=101    第二笔
-
-```
-
-  
-
-数据面不读这两个值：xfer endpoint 上只有纯 payload，收敛靠 endpoint + `total_len`。`port` / `transfer_id` 只存在于接口参数与异常 ABORT 控制消息中，正常收发不上总线。
-
-  
-
-保留 port（业务须避开）：
-
-  
-
-- `AX_USB_XFER_DYNAMIC_PORT = 0xffffffff`
-
-- `AX_USB_XFER_SERVICE_PORT = 0xfffffffe`
-
-  
-
-#### transfer_id 由 Host 集中分配
-
-  
-
-驱动只把 `transfer_id` 当入参：谁分配、怎么协商，驱动不参与（它只用 id 建表、去重、ABORT 定位）。业务层约定 **Host 作为唯一分配者**，两个方向共用同一 id 空间，天然保证唯一、且不会 H2D/D2H 撞号：
-
-  
-
-- **H2D（Host 发）**：Host 自分配自用 —— 分配 id → OFFER 直接带 id → Device `recv(id)` 预投 → ACK → Host `submit(id)`。
-
-- **D2H（Device 发）**：Device 先请求 —— Device 发 OFFER（带业务侧临时 `local_tag` + port + total_len，不带 id）→ Host 分配 id → Host 先 `recv(id)` 预投 → ACK 回带 `(local_tag, id)` → Device 用 `local_tag` 认领 id 后 `submit(id)`。
-
-  
-
-要点：① OFFER 必须带 `port` 和 `total_len`（接收端据此备 dest buffer）；② 接收端 `recv` 预投必须在 ACK 之前，ACK 语义即“我已就绪，用这个 id”；③ D2H 的 `local_tag` 仅用于 Device 匹配自己哪一个 OFFER 的 ACK，只在控制消息里，不上 xfer wire；④ 分配的 id 应绑当前 link generation，重连后旧 id 作废。
-
-  
-
-### 1.5 完成回调 complete(priv, status, actual)
-
-  
-
-`submit` / `recv` / `cancel` 共用同一套完成语义（两侧一致）：
-
-  
-
-```text
-
- 0             成功，actual == total_len
-
--ECANCELED     被 cancel 主动取消
-
--ECONNABORTED  收到对端 ABORT
-
--ETIMEDOUT     5 秒超时
-
--EPROTO        短读 / 协议错（接收侧）
-
--ESHUTDOWN     链路断开
-
-```
-
-  
-
-`actual` 为实际传输字节数：成功时等于 `total_len`，异常时为已传字节。回调顺序固定为先 `complete` 后 `release`：
-
-  
-
-```text
-
-complete(priv, status, actual)   先：报告结果与实传字节，此时 SG 仍有效，可安全读取
-
-release(priv)                    后：释放/unpin/unmap SG 与 priv
-
-```
-
-  
-
-### 1.6 调用契约
-
-  
-
-以下由业务层保证，驱动不替兜底：
-
-  
-
-1. `transfer_id` 由业务层维护、**Host 集中分配**（见 1.4）：非零、本端收发两表内唯一、两端必须一致。驱动校验非零与去重，但无法校验两端一致，一致性由 OFFER/ACK 协议保证。
-
-2. 同方向单笔串行：xfer 数据面是纯字节流，同一方向同一时刻只能有一笔在传，否则字节交错损坏。多笔请排队。
-
-3. 异步 SG 在 `complete` 前保持稳定：不释放、不改写、不解除 pin / map。
-
-4. H2D 时序：须 Device 先 `recv` 预投，Host 再 `submit`，避免 OUT 数据到达时无人接收。
-
-5. Host 句柄有效性：只在 `host_added` 之后、`host_removed` 之前使用 `host`。
-
-  
-
-### 1.7 链路状态：上下线、挂起，通知 + 查询
-
-  
-
-驱动区分两类状态，两侧对称，业务层可“推”（回调）也可“拉”（查询）：
-
-  
-
-- **online / offline**：是否已枚举。上下线经 `link_changed(online)` 回调通知（必选回调）。
-
-- **suspended**：online 但被总线挂起（可 resume 恢复，与下线不同）。变化经 `suspend_changed(suspended)` 回调通知（**可选回调**，NULL 则不回调）。
-
-  
-
-查询接口（推拉并存，不注册回调也能主动查）：
-
-  
-
-```text
-
-is_online()      是否已枚举
-
-is_suspended()   online && 已挂起
-
-is_ready()       online && !suspended —— 业务“能否发起 xfer”看这个
-
-```
-
-  
-
-说明：① `suspend_changed` 可选，业务层不实现也不影响；② `register_client` 不补投挂起态——新注册 client 想知道当前是否挂起，直接查 `is_suspended()`；③ 挂起期间驱动不硬拒 `submit`/`recv`（入口仍只 gate online），业务层按 `is_ready()` 自行判断是否发起。
-
-  
+因此，当需要调试 U-Boot 启动流程，或者定位 U-Boot 早期初始化阶段的问题时，现有方式存在一定限制。
 
 ---
 
-  
+## 3. 解决方案
+
+本方案补充 AX525 通过 Boot Wrapper 直接启动 U-Boot 的脚本，使 U-Boot 可以在方式一的环境下启动，并使用 T32 调试器进行调试。
+
+通过该方式，可以实现：
+
+- 使用 T32 调试 U-Boot；
+- 单步执行 U-Boot 代码；
+- 查看 U-Boot 运行过程中的寄存器；
+- 查看 RAM 内容；
+- 定位 U-Boot 早期启动及初始化问题；
+- 不依赖带 ROM Code 的 Bitfile 工程。
 
 ---
 
-  
+## 4. 脚本文件
 
-## 2. Device 端接口
+> 脚本文件待补充。
 
-  
-
-Device 端提供 9 个函数 + 1 个回调结构体：
-
-  
-
-**注册 / 注销**
-
-  
-
-- `ax_usb_xfer_device_register_client` — 注册回调（收 frame + 链路状态），全局单 client
-
-- `ax_usb_xfer_device_unregister_client` — 注销回调，返回后保证回调不再触发
-
-  
-
-**回调**
-
-  
-
-- `struct ax_usb_xfer_device_client_ops` — 业务层实现：`frame_received` / `link_changed` / `suspend_changed`（可选）
-
-  
-
-**大块数据（异步 SG）**
-
-  
-
-- `ax_usb_xfer_device_submit` — D2H 发送：Device 向 Host 提交一笔 source SG
-
-- `ax_usb_xfer_device_recv` — H2D 接收：为 Host 来的数据预投一块 dest SG
-
-  
-
-**小消息（同步拷贝）**
-
-  
-
-- `ax_usb_xfer_device_send_frame` — 发 CTRL/DBG/copy DATA 帧，返回即完成拷贝
-
-  
-
-**状态查询**
-
-  
-
-- `ax_usb_xfer_device_is_online` — 查询当前链路是否在线
-
-- `ax_usb_xfer_device_is_suspended` — 查询是否总线挂起（online 且已挂起）
-
-- `ax_usb_xfer_device_is_ready` — 查询是否可发起 xfer（online && !suspended）
-
-  
-
-### 2.1 ax_usb_xfer_device_register_client
-
-  
-
-```c
-
-struct ax_usb_xfer_device_client_ops {
-
-        int  (*frame_received)(void *priv, u32 type, u32 port,
-
-                               const void *payload, u32 payload_len);
-
-        void (*link_changed)(void *priv, bool online);
-
-        /* 可选：总线 suspend/resume 时通知，NULL 则不回调 */
-
-        void (*suspend_changed)(void *priv, bool suspended);
-
-};
-
-  
-
-int ax_usb_xfer_device_register_client(
-
-        const struct ax_usb_xfer_device_client_ops *ops, void *priv);
-
-```
-
-  
-
-作用：注册业务层唯一 client，接收 frame 通路数据与链路状态变化。
-
-  
-
-参数：
-
-  
-
-- `ops`：回调表，两个回调都不能为空，否则返回 `-EINVAL`。
-
-- `priv`：业务上下文，原样透传给回调第一个参数。
-
-  
-
-回调语义：
-
-  
-
-- `frame_received(priv, type, port, payload, len)`：收到 frame 通路完整帧时触发。`payload` 是借用指针，仅回调期间有效，需留用必须自行拷贝。注意 xfer 大块数据不走此回调。
-
-- `link_changed(priv, online)`：链路上线 / 下线通知。`online=false` 后所有在途 xfer 会被终止并回调 `complete(-ESHUTDOWN)`。
-
-  
-
-返回：`0` 成功；`-EINVAL` 回调缺失；`-EBUSY` 已有 client（单 client 模型）；`-ENOMEM`。
-
-  
-
-### 2.2 ax_usb_xfer_device_unregister_client
-
-  
-
-```c
-
-void ax_usb_xfer_device_unregister_client(
-
-        const struct ax_usb_xfer_device_client_ops *ops, void *priv);
-
-```
-
-  
-
-作用：注销 client。`ops` 与 `priv` 须与注册时一致才生效。
-
-  
-
-保证：函数返回后 `frame_received` / `link_changed` 保证不再被调用，可安全释放 `priv` 指向的资源。
-
-  
-
-### 2.3 ax_usb_xfer_device_recv（H2D 接收）
-
-  
-
-```c
-
-int ax_usb_xfer_device_recv(u32 transfer_id, u32 port,
-
-                            const struct ax_usb_xfer_dest *dest);
-
-```
-
-  
-
-作用：Device 作为接收端，为一笔 H2D 传输预投接收窗口，等待 Host 发来的 payload 落入 `dest->sg`。
-
-  
-
-参数：
-
-  
-
-- `transfer_id`：本笔传输标识，非零，且与 Host 侧协商一致。
-
-- `port`：业务路由端口（见 1.4），须避开保留值。
-
-- `dest`：接收目标，`sg` / `nents` / `total_len` / `release` 必填。
-
-  
-
-返回码：
-
-  
+脚本路径：
 
 ```text
-
- 0           预投成功，后续经 dest->complete 通知结果
-
--EINVAL      参数为空 / transfer_id == 0 / port 为保留值
-
--EMSGSIZE    dest->nents > 4096
-
--ENOTCONN    链路不在线
-
--EOPNOTSUPP  对端未声明 CAP_H2D（Host 侧尚未就绪支持 H2D）
-
--ENOSPC      在途 xfer 已达上限（8 笔）
-
--EEXIST      该 transfer_id 在本端 TX/RX 任一表已在册
-
--EAGAIN      提交过程中链路重连（generation 变化），可重试
-
--ENOMEM      分配失败
-
+<待补充>
 ```
 
-  
-
-buffer 生命周期：见 1.5（先 `release` 后 `complete`）。
-
-  
-
-### 2.4 ax_usb_xfer_device_submit（D2H 发送）
-
-  
-
-```c
-
-int ax_usb_xfer_device_submit(u32 transfer_id, u32 port,
-
-                              const struct ax_usb_xfer_source *source);
-
-```
-
-  
-
-作用：Device 作为发送端，向 Host 提交一笔 D2H 大块传输。长度取自 `source->total_len`，驱动内部自动选择单包 / 大包 rolling-window 路径，业务层无需区分。
-
-  
-
-参数：与 `recv` 相同，方向相反（`source` 提供待发数据 SG）。
-
-  
-
-返回码：
-
-  
+脚本名称：
 
 ```text
-
- 0           成功，后续经 source->complete 通知结果
-
--EINVAL      参数非法 / transfer_id == 0 / port 为保留值
-
--ENOTCONN    链路不在线
-
--ENOSPC      在途 xfer 已达上限
-
--EEXIST      该 transfer_id 已在册
-
--ENOMEM      分配失败
-
+<待补充>
 ```
 
-  
+相关使用说明：
 
-D2H 为既有能力（两端已声明 BIDIR），此接口不检查 CAP。提交失败（返回非 0）时 source 所有权不转移，回调不触发，调用方自行释放。
-
-  
-
-### 2.5 ax_usb_xfer_device_send_frame（小消息同步发送）
-
-  
-
-```c
-
-int ax_usb_xfer_device_send_frame(u32 type, u32 port,
-
-                                  const void *buf, u32 len);
-
+```text
+<待补充>
 ```
-
-  
-
-作用：发送一帧 CTRL / DBG / copy DATA。返回即完成拷贝，`buf` 可立即释放，这是它与 `submit` 的根本区别。
-
-  
-
-参数：
-
-  
-
-- `type`：`AX_USB_XFER_PIPE_TYPE_CTRL(0)` / `_DATA(1)` / `_DBG(2)`。
-
-- `port`：业务端口，须避开 `DYNAMIC_PORT`。
-
-- `buf` / `len`：待发数据。长度上限按 type：CTRL / DBG 各 1024 字节，DATA 约 2 MiB。
-
-  
-
-返回：`0` 成功；`-EINVAL`（参数非法）；`-EMSGSIZE`（超上限）；`-ENOSPC`（发送池满，不写半帧）；`-ENOTCONN`（不在线）。
-
-  
-
-业务层的 OFFER / ACK 协商消息即用本接口发送（`type=CTRL` + 业务 port），对端从 `frame_received` 收。
-
-  
-
-### 2.6 ax_usb_xfer_device_is_online / is_suspended / is_ready
-
-  
-
-```c
-
-bool ax_usb_xfer_device_is_online(void);     /* 是否已枚举在线 */
-
-bool ax_usb_xfer_device_is_suspended(void);  /* online && 已总线挂起 */
-
-bool ax_usb_xfer_device_is_ready(void);      /* online && !suspended */
-
-```
-
-  
-
-作用：查询链路状态，轻量，可随时调用。三态语义见 1.7。业务层“能否发起 xfer”查 `is_ready()` 即可，无需自行组合 online 与 suspended。挂起（`is_suspended` 为 true）可经 resume 恢复，与下线（`is_online` 为 false）不同。
-
-  
 
 ---
 
-  
-
-## 3. Host 端接口
-
-  
-
-Host 端提供 9 个函数 + 1 个回调结构体。与 Device 端主要差异：接口带 `host` 句柄、多 `host_added` / `host_removed` 两个回调、额外提供 `cancel`、`send_frame` 返回已发送字节数。
-
-  
-
-**注册 / 注销**
-
-  
-
-- `ax_usb_xfer_host_register_client` — 注册回调（收 frame + 链路 + 句柄增删），全局单 client
-
-- `ax_usb_xfer_host_unregister_client` — 注销回调
-
-  
-
-**回调**
-
-  
-
-- `struct ax_usb_xfer_host_client_ops` — 业务层实现：`frame_received` / `link_changed` / `host_added` / `host_removed` / `suspend_changed`（可选）
-
-  
-
-**大块数据（异步 SG）**
-
-  
-
-- `ax_usb_xfer_host_submit` — H2D 发送：Host 向 Device 提交一笔 source SG
-
-- `ax_usb_xfer_host_recv` — D2H 接收：为 Device 来的数据预投一块 dest SG
-
-- `ax_usb_xfer_host_cancel` — 取消一笔已提交的 submit 或 recv
-
-  
-
-**小消息（同步拷贝）**
-
-  
-
-- `ax_usb_xfer_host_send_frame` — 发 CTRL/DBG/copy DATA 帧，返回即完成拷贝
-
-  
-
-**句柄 / 状态查询**
-
-  
-
-- `ax_usb_xfer_host_find_by_id` / `ax_usb_xfer_host_put` / `ax_usb_xfer_host_id` — 按稳定 id 取带引用的 host、释放、取 id
-
-- `ax_usb_xfer_host_is_online` / `is_suspended` / `is_ready` — 三态查询
-
-  
-
-### 3.1 ax_usb_xfer_host_register_client
-
-  
-
-```c
-
-struct ax_usb_xfer_host_client_ops {
-
-        int  (*frame_received)(void *priv, struct ax_usb_xfer_host *host,
-
-                               u32 type, u32 port,
-
-                               const void *payload, u32 payload_len);
-
-        void (*link_changed)(void *priv, struct ax_usb_xfer_host *host,
-
-                             bool online);
-
-        void (*host_added)(void *priv, struct ax_usb_xfer_host *host);
-
-        void (*host_removed)(void *priv, struct ax_usb_xfer_host *host);
-
-        /* 可选：总线 suspend/resume 时通知，NULL 则不回调 */
-
-        void (*suspend_changed)(void *priv, struct ax_usb_xfer_host *host,
-
-                                bool suspended);
-
-};
-
-  
-
-int ax_usb_xfer_host_register_client(
-
-        const struct ax_usb_xfer_host_client_ops *ops, void *priv);
-
-```
-
-  
-
-作用：注册业务层唯一 client，接收 frame 通路数据、链路状态、以及 Device 句柄的增删。
-
-  
-
-参数：
-
-  
-
-- `ops`：回调表，前四个回调（`frame_received`/`link_changed`/`host_added`/`host_removed`）不能为空，否则返回 `-EINVAL`；`suspend_changed` 可选（可为 NULL）。
-
-- `priv`：业务上下文，原样透传给回调第一个参数。
-
-  
-
-回调语义：
-
-  
-
-- `frame_received(priv, host, type, port, payload, len)`：收到 frame 通路完整帧时触发，`host` 标识来自哪个 Device。`payload` 是借用指针，仅回调期间有效。xfer 大块数据不走此回调。
-
-- `link_changed(priv, host, online)`：该 `host` 的链路上线 / 下线通知。
-
-- `host_added(priv, host)`：一个 Device 枚举成功，下发其句柄。业务层须保存此 `host` 用于后续收发。注册时若已有在线 Device，会逐个补投一次。
-
-- `host_removed(priv, host)`：该 Device 断开，句柄即将失效，业务层须停止使用。
-
-- `suspend_changed(priv, host, suspended)`（可选）：该 `host` 总线挂起 / 恢复通知，见 1.7。
-
-  
-
-返回：`0` 成功；`-EINVAL` 回调缺失；`-EBUSY` 已有 client。
-
-  
-
-### 3.2 ax_usb_xfer_host_unregister_client
-
-  
-
-```c
-
-void ax_usb_xfer_host_unregister_client(
-
-        const struct ax_usb_xfer_host_client_ops *ops, void *priv);
-
-```
-
-  
-
-作用：注销 client。`ops` 与 `priv` 须与注册时一致才生效。
-
-  
-
-### 3.3 ax_usb_xfer_host_submit（H2D 发送）
-
-  
-
-```c
-
-int ax_usb_xfer_host_submit(struct ax_usb_xfer_host *host,
-
-                            u32 transfer_id, u32 port,
-
-                            const struct ax_usb_xfer_source *src);
-
-```
-
-  
-
-作用：Host 作为发送端，向指定 Device 提交一笔 H2D 大块传输，数据经 `xfer_out` bulk OUT 发出。长度取自 `src->total_len`。
-
-  
-
-参数：
-
-  
-
-- `host`：目标 Device 句柄（来自 `host_added`）。
-
-- `transfer_id`：本笔传输标识，非零，且与 Device 侧协商一致。
-
-- `port`：业务路由端口，须避开保留值。
-
-- `src`：待发数据，`sg` / `nents` / `total_len` / `complete` / `release` 必填。
-
-  
-
-返回码：
-
-  
-
-```text
-
- 0           成功，后续经 src->complete 通知结果
-
--EINVAL      参数为空 / transfer_id == 0 / port 为保留值
-
--ENOTCONN    链路不在线
-
--EOPNOTSUPP  对端未声明 CAP_H2D（Device 侧无 preposted receiver，
-
-             此时发数据会 NAK 堆积；须等两端 CAP_H2D 就绪）
-
--EEXIST      该 transfer_id 在本 host 已在册
-
--ENOMEM      分配失败
-
-```
-
-  
-
-前置条件：H2D 要求 Device 先 `recv` 预投，Host 再 `submit`。调用前须完成 OFFER/ACK 握手（见第 4 节），确认 Device 就绪。buffer 生命周期见 1.5。
-
-  
-
-### 3.4 ax_usb_xfer_host_recv（D2H 接收）
-
-  
-
-```c
-
-int ax_usb_xfer_host_recv(struct ax_usb_xfer_host *host,
-
-                          u32 transfer_id, u32 port,
-
-                          const struct ax_usb_xfer_dest *dest);
-
-```
-
-  
-
-作用：Host 作为接收端，为一笔 D2H 传输预投接收窗口，数据经 `xfer_in` bulk IN 落入 `dest->sg`。
-
-  
-
-参数：与 `submit` 相同，方向相反（`dest` 提供接收目标 SG）。
-
-  
-
-返回码：
-
-  
-
-```text
-
- 0           预投成功，后续经 dest->complete 通知结果
-
--EINVAL      参数为空 / transfer_id == 0 / port 为保留值
-
--ENOTCONN    链路不在线
-
--EOPNOTSUPP  D2H 接收能力未就绪（xfer_rx_enabled 未置位）
-
--EEXIST      该 transfer_id 在本 host 已在册
-
--ENOMEM      分配失败
-
-```
-
-  
-
-buffer 生命周期见 1.5。
-
-  
-
-### 3.5 ax_usb_xfer_host_cancel
-
-  
-
-```c
-
-int ax_usb_xfer_host_cancel(struct ax_usb_xfer_host *host, u32 transfer_id);
-
-```
-
-  
-
-作用：主动取消一笔已提交的 xfer。驱动在本 host 的发送表与接收表中按 `transfer_id` 查找，命中即终止：kill 在途 URB、向对端发 ABORT 通知、最终回调 `complete(-ECANCELED, actual)`。
-
-  
-
-返回：`0` 命中并已发起取消；`-ENOENT` 未找到该 `transfer_id`；`-EINVAL` `host` 为空。
-
-  
-
-说明：取消是收敛的发起动作，实际释放仍通过 `complete` 回调异步完成。
-
-  
-
-### 3.6 ax_usb_xfer_host_send_frame（小消息同步发送）
-
-  
-
-```c
-
-ssize_t ax_usb_xfer_host_send_frame(struct ax_usb_xfer_host *host,
-
-                                    u32 type, u32 port,
-
-                                    const void *buf, u32 len);
-
-```
-
-  
-
-作用：向指定 Device 发送一帧 CTRL / DBG / copy DATA。返回即完成拷贝，`buf` 可立即释放。
-
-  
-
-参数：
-
-  
-
-- `host`：目标 Device 句柄。
-
-- `type`：`AX_USB_XFER_PIPE_TYPE_CTRL(0)` / `_DATA(1)` / `_DBG(2)`。
-
-- `port`：业务端口，须避开 `DYNAMIC_PORT`。
-
-- `buf` / `len`：待发数据。长度上限按 type：CTRL / DBG 各 1024 字节，DATA 约 2 MiB。
-
-  
-
-返回：成功返回已发送字节数 `len`（`ssize_t` 正值）；失败返回负错误码（`-EINVAL` / `-EMSGSIZE` / `-ENOSPC` / `-ENOTCONN`）。
-
-  
-
-> 注意：Host 的 `send_frame` 成功返回字节数，Device 的 `send_frame` 成功返回 0，判断成功时须区分。
-
-  
-
-### 3.7 句柄查找与状态查询
-
-  
-
-```c
-
-struct ax_usb_xfer_host *ax_usb_xfer_host_find_by_id(u32 id); /* 返回带引用的 host */
-
-void ax_usb_xfer_host_put(struct ax_usb_xfer_host *host);     /* 释放 find_by_id 的引用 */
-
-u32  ax_usb_xfer_host_id(struct ax_usb_xfer_host *host);      /* (busnum<<16)|devnum */
-
-  
-
-bool ax_usb_xfer_host_is_online(struct ax_usb_xfer_host *host);
-
-bool ax_usb_xfer_host_is_suspended(struct ax_usb_xfer_host *host);  /* online && 挂起 */
-
-bool ax_usb_xfer_host_is_ready(struct ax_usb_xfer_host *host);      /* online && !suspended */
-
-```
-
-  
-
-作用：
-
-  
-
-- **多 device 查找**：`find_by_id` 按稳定 id `(busnum<<16)|devnum` 查在线 host，命中返回带引用的句柄，用完必须 `put`（只能在可睡眠上下文调用）。收到 `host_removed` 后须释放之前 `find_by_id` 得到的全部引用。`id` 取自 `ax_usb_xfer_host_id(host)`，可在 `host_added`/`host_removed` 之间关联同一 host。
-
-- **状态查询**：三态语义见 1.7，带 `host` 句柄（多实例，各 host 独立）。业务“能否发起 xfer”查 `is_ready()`。
-
-  
+## 5. 使用前提
+
+使用该方案前，需要满足以下条件：
+
+1. 已准备好 AX525 的 Kernel / Boot Wrapper 调试环境；
+2. 已正确配置 T32 调试器；
+3. 已完成 U-Boot 编译；
+4. 已确认 U-Boot 的加载地址及运行地址；
+5. 已根据当前工程修改启动脚本中的地址配置；
+6. 已准备对应的 U-Boot 镜像文件。
 
 ---
 
-  
+## 6. U-Boot 编译
 
-## 4. 交互调用图
+U-Boot 可以通过以下工程进行编译：
 
-  
+- NOR 工程；
+- eMMC 工程。
 
-图为函数调用视角：业务层按什么顺序调哪个接口、回调如何串接。OFFER / ACK 均走 frame 通路（`send_frame` CTRL），数据走 xfer 通路。**`transfer_id` 一律由 Host 分配**（见 1.4）：H2D 时 Host 自分配，D2H 时 Host 应 Device 请求而分配、经 ACK 回传。
+根据实际使用的存储介质选择对应工程，并完成 U-Boot 编译。
 
-  
-
-### 4.1 H2D 调用图（Host 发 / Device 收）
-
-  
+### 6.1 NOR 工程
 
 ```text
-
-Host 业务层                          Device 业务层
-
------------                          -------------
-
-register_client(ops)                 register_client(ops)
-
-   收 host_added(host)                    |
-
-        |                                 |
-
-   等 link online                    等 link online
-
-        |                                 |
-
-Host 分配 transfer_id                     |
-
-        |                                 |
-
-ax_usb_xfer_host_send_frame -- OFFER ---> frame_received 回调
-
-  (host, CTRL, OFFER{id,port,len})              |
-
-        |                         ax_usb_xfer_device_recv(id, port, dest)
-
-        |                                 |    先预投，再回 ACK
-
-frame_received 回调 <---- ACK ----- ax_usb_xfer_device_send_frame(CTRL, ACK{id})
-
-        |                                 |
-
-ax_usb_xfer_host_submit(host,id,port,src) |
-
-        |                                 |
-
-   [数据经 xfer_out 传输]                  |
-
-        |                                 |
-
-src->complete(status,actual)         dest->complete(status,actual)
-
-src->release(priv)                   dest->release(priv)
-
+<待补充：NOR 工程编译命令或路径>
 ```
 
-  
-
-### 4.2 D2H 调用图（Device 发 / Host 收）
-
-  
-
-发送端在 Device（`submit`），接收端在 Host（`recv`），数据走 `xfer_in`。与 H2D 不同：id 仍由 Host 分配，Device 先发 OFFER 请求，Host 分配后经 ACK 回传 id。
-
-  
+### 6.2 eMMC 工程
 
 ```text
-
-Device 业务层                        Host 业务层
-
--------------                        -----------
-
-register_client(ops)                 register_client(ops)
-
-        |                               收 host_added(host)
-
-   等 link online                    等 link online
-
-        |                                 |
-
-生成本地 local_tag                        |
-
-        |                                 |
-
-ax_usb_xfer_device_send_frame - OFFER --> frame_received 回调
-
-  (CTRL, OFFER{local_tag,port,len})             |
-
-        |                            Host 分配 transfer_id
-
-        |                            ax_usb_xfer_host_recv(host, id, port, dest)
-
-        |                                 |    先预投，再回 ACK
-
-frame_received 回调 <- ACK{local_tag,id} - ax_usb_xfer_host_send_frame(host, CTRL, ACK)
-
-        |                                 |
-
-用 local_tag 认领 id                      |
-
-ax_usb_xfer_device_submit(id,port,source) |
-
-        |                                 |
-
-   [数据经 xfer_in 传输]                   |
-
-        |                                 |
-
-source->complete(status,actual)      dest->complete(status,actual)
-
-source->release(priv)                dest->release(priv)
-
+<待补充：eMMC 工程编译命令或路径>
 ```
 
-  
-
-### 4.3 异常收敛图（任一方向通用）
-
-  
+编译完成后，需要确认以下输出文件：
 
 ```text
-
-某端 timeout / IO error / cancel
-
-        |
-
-        +--> 本地：终止本端 xfer 对象、kill/dequeue 在途请求
-
-        |
-
-        +--> service endpoint 发 ABORT{transfer_id, status}
-
-                     |
-
-                     v
-
-             对端 frame_received --> 按 transfer_id 在收发两表定位那一笔
-
-                     |
-
-                     +--> 终止对应 xfer 对象
-
-                     +--> kill / dequeue 其在途请求
-
-                     +--> complete(status, actual) + release(priv)
-
+<待补充：U-Boot 输出文件名称及路径>
 ```
-
-  
-
-Host 侧还可通过 `ax_usb_xfer_host_cancel(host, transfer_id)` 主动发起上述收敛。ABORT 靠 `transfer_id` 指认要清理哪一笔，这是它在异常路径中不可替代的作用。
-
-  
 
 ---
 
-  
+## 7. 启动地址配置
 
-## 5. 调用速查
+### 7.1 注意事项
 
-  
+该脚本不是通用脚本。
 
-### 5.1 Device 端
+不同工程生成的 U-Boot 镜像，其加载地址、运行地址或相关内存布局可能不同，因此不同工程可能需要使用不同的地址配置。
 
-  
+在使用脚本前，需要根据当前工程的编译配置确认对应地址。
 
-```text
+### 7.2 地址获取方式
 
-初始化:   register_client(ops, priv)  然后等 link_changed(online=true)
+可以通过查看编译生成的 `.config` 文件，获取相关宏定义对应的地址。
 
-  
-
-H2D 收:   收到 OFFER（frame_received） -> 备 dest SG
-
-          ax_usb_xfer_device_recv(id, port, dest)          返回 0
-
-          ax_usb_xfer_device_send_frame(CTRL, port, ACK)
-
-          等 dest->complete(status, actual)
-
-  
-
-D2H 发:   生成 local_tag，发 OFFER(local_tag, port, total_len)
-
-          收到 ACK(local_tag, id)，用 local_tag 认领 id
-
-          ax_usb_xfer_device_submit(id, port, source)
-
-          等 source->complete(status, actual)
-
-  
-
-小消息:   ax_usb_xfer_device_send_frame(CTRL/DBG, port, buf, len)   同步
-
-  
-
-下线:     ax_usb_xfer_device_unregister_client(ops, priv)
-
-```
-
-  
-
-### 5.2 Host 端
-
-  
+`.config` 文件路径：
 
 ```text
-
-初始化:   register_client(ops, priv)
-
-          收 host_added(host) 保存句柄
-
-          等 link_changed(online=true)
-
-  
-
-H2D 发:   Host 分配 transfer_id
-
-          ax_usb_xfer_host_send_frame(host, CTRL, port, OFFER{id})
-
-          收到 ACK（frame_received）
-
-          ax_usb_xfer_host_submit(host, id, port, src)
-
-          等 src->complete(status, actual)
-
-  
-
-D2H 收:   收到 OFFER(local_tag)（frame_received） -> Host 分配 id -> 备 dest SG
-
-          ax_usb_xfer_host_recv(host, id, port, dest)      返回 0（先预投）
-
-          ax_usb_xfer_host_send_frame(host, CTRL, port, ACK{local_tag,id})
-
-          等 dest->complete(status, actual)
-
-  
-
-取消:     ax_usb_xfer_host_cancel(host, transfer_id)
-
-  
-
-小消息:   ax_usb_xfer_host_send_frame(host, CTRL/DBG, port, buf, len)   同步
-
-  
-
-下线:     ax_usb_xfer_host_unregister_client(ops, priv)
-
+ax525/build/out/AX525_nor_uclibc/objs/boot/uboot/uboot/u-boot-2020.04/.config
 ```
 
-  
+需要关注的宏定义：
+
+```text
+<待补充：宏定义名称>
+```
+
+示例：
+
+```text
+<待补充：宏定义及地址示例>
+```
+
+确认地址后，将其同步配置到启动脚本中。
+
+```text
+<待补充：脚本中的地址配置位置>
+```
 
 ---
 
-  
+## 8. 启动流程
 
-## 6. xfer 数据通路时序图（驱动内部）
-
-  
-
-> 两张图，覆盖 tx / rx 两个数据方向；每张左右为 **Device / Host 两侧驱动内部**，箭头为数据流向（发送方在左、数据向右）。只画 xfer 数据面；业务层 `transfer_id` 协商属应用层，不在图中。
-
->
-
-> 看图前先记两侧机制差异：**Device 侧** = 默认 3 个 `usb_request` 槽、`usb_ep_queue`、每槽独立 rolling 补包；**Host 侧** = 4 个 URB（`UX_HOST_XFER_URB_COUNT`）、`usb_submit_urb`、整批 drain 后再续投下一批。两侧都把 `total_len` 按 2MiB / mps / 段数上限切成任意多个 chunk。
-
-  
-
-### 6.1 D2H：Device 发送（tx）══▶ Host 接收（rx）
-
-  
+整体流程如下：
 
 ```text
-
-Device 侧（发送 / tx）                               Host 侧（接收 / rx）
-
-3 个 req 槽 · usb_ep_queue · 每槽 rolling            4 个 URB · usb_submit_urb · 整批 drain 续投
-
-------------------------------------------          ------------------------------------------
-
- ax_usb_xfer_device_submit                           ax_usb_xfer_host_recv
-
-    │ 校验 CAP_D2H；预分配 3 个 req 槽                  │ 校验 xfer_rx_enabled；预分配 4 个 URB
-
-    ▼                                                 ▼
-
-┌─▶ ux_device_tx_pump_work                          ┌─▶ ux_host_xfer_submit_next
-
-│    │ ux_large_chunk_span      算 chunk 长           │    │ ux_host_xfer_build_slice  建 dest slice
-
-│    │  ≤2MiB / ≤84 段；非末段 ALIGN_DOWN mps          │    │  ≤2MiB / ≤512 段；非末段 round_down mps
-
-│    │ ux_device_tx_slot_build  切 source SG 视图      │    ▼
-
-│    ▼                                               │  usb_submit_urb(xfer_in)
-
-│  usb_ep_queue(xfer_in) ══ payload chunk（bulk IN）══▶ 收满 → 落入预投的 dest SG
-
-│    ▼      （3 槽 / 4 URB 并发在途，逐笔搬运）          │    ▼
-
-│  ux_device_tx_complete   每笔 DWC3 回调              │  ux_host_rx_urb_complete   每笔 URB 回调
-
-│    │ actual += len；slot_reset 腾槽                  │    │ actual += len；校验 actual == slice_len
-
-└────┘ schedule pump → 空槽补下一 chunk                └────┘ schedule pump → inflight==0 续投下一批
-
-    │   （直到 submitted == total_len）                 │   （直到 actual == total_len）
-
-    ▼                                                 ▼
-
- reap → ux_device_tx_free                             reap → ux_host_xfer_reap_work
-
-    source.complete ← 先 / source.release ← 后          dest.complete ← 先 / dest.release ← 后
-
+编译 NOR/eMMC 工程中的 U-Boot
+        │
+        ▼
+查看编译生成的 .config
+        │
+        ▼
+确认当前工程对应的地址宏定义
+        │
+        ▼
+修改 U-Boot 启动脚本中的地址配置
+        │
+        ▼
+编译/准备 Boot Wrapper 工程
+        │
+        ▼
+连接 T32 调试器
+        │
+        ▼
+执行直接启动 U-Boot 的脚本
+        │
+        ▼
+通过 T32 调试 U-Boot
 ```
 
-  
-
-### 6.2 H2D：Host 发送（tx）══▶ Device 接收（rx）
-
-  
-
-> H2D 须 Device 先 `recv` 预投、Host 再 `submit`（契约 1.6 第 4 条）；下图左右并列不表示左侧先执行。
-
-  
-
-```text
-
-Host 侧（发送 / tx）                                 Device 侧（接收 / rx）
-
-4 个 URB · usb_submit_urb · 整批 drain 续投          3 个 req 槽 · usb_ep_queue · 每槽 rolling
-
-------------------------------------------          ------------------------------------------
-
- ax_usb_xfer_host_submit                             ax_usb_xfer_device_recv
-
-    │ 校验 CAP_H2D；预分配 4 个 URB                     │ 校验对端 CAP_H2D；预分配 3 个 req 槽
-
-    ▼                                                 ▼
-
-┌─▶ ux_host_tx_submit_next                          ┌─▶ ux_device_rx_pump_work
-
-│    │ ux_host_tx_build_slice  建 source slice        │    │ ux_device_rx_span      算 slice 长
-
-│    │  ≤2MiB / ≤512 段；非末段 round_down mps         │    │  ≤2MiB / ≤84 段；非末段 ALIGN_DOWN mps
-
-│    ▼                                               │    │ ux_device_rx_slot_build  切 dest SG 视图
-
-│  usb_submit_urb(xfer_out) ══ payload（bulk OUT）══▶ usb_ep_queue(xfer_out) 预投 → 收满填 dest SG
-
-│    ▼                                               │    ▼
-
-│  ux_host_tx_urb_complete   每笔 URB 回调            │  ux_device_rx_complete   每笔 DWC3 回调
-
-│    │ actual += len                                  │    │ actual += len；slot_reset 腾槽
-
-└────┘ schedule pump → inflight==0 续投下一批          └────┘ schedule pump → 空槽补下一 slice
-
-    │   （直到 actual == total_len）                    │   （直到 submitted == total_len）
-
-    ▼                                                 ▼
-
- reap → src.complete ← 先 / src.release ← 后          reap → ux_device_rx_free
-
-                                                        dest.complete ← 先 / dest.release ← 后
-
-```
-
-  
-
-要点（校正常见误解，均以 `device/` `host/` 两侧 .c 源码为准）：
-
-  
-
-1. **Device 三槽是滚动窗口，不是把数据切成 3 份**：`submit` / `recv` 预分配 `window`（默认 3，`clamp(ux_large_sw_window, 1, 3)`）个 `usb_request`；`total_len` 按 2MiB / 84 段 / mps 切成**任意多个 chunk**，三槽轮流复用。例如 10 MiB ≈ 切 5 笔 2 MiB chunk，由 3 槽分批消化，绝非只发 6 MiB。
-
-2. **补包节奏两侧不同**：Device 侧每笔 `complete` 里 `slot_reset` 腾槽并 `schedule pump`，pump 补**该空槽**（每槽独立 rolling）；Host 侧 `urb_complete` 只记账，pump 里 `inflight == 0` 才 `submit_next` 投**下一整批** 4 个 URB。两侧都靠 `submitted` / `actual == total_len` 收敛。
-
-3. **切分对齐**：非末段对齐 mps（Device `ALIGN_DOWN`、Host `round_down`）保证 wire 上中间无 short packet；末段精确 clamp。接收侧据此校验 `actual == slice_len`，不满即 `-EPROTO`。段数上限：Device 84（DWC3 TRB ring）、Host 512（`UX_HOST_XFER_SG_BUDGET`）。
-
-4. **complete 先、release 后**：两侧两方向统一——Device 在 `ux_device_{tx,rx}_free`，Host 经 reap → `put` → release；与 1.5 一致。
-
-5. **H2D 须先 recv 后 submit**：Device 先 `recv` 预投接收窗口、Host 再 `submit`（契约 1.6 第 4 条），否则 OUT 数据到达时 Device 无 preposted receiver。
+---
