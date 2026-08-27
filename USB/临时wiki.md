@@ -468,7 +468,6 @@ mtd_arg_off(part_name,...)               ← 写入时反查 offset/size 
 
 ```
 
-  
 
 - `unit`：`0`=1MB `1`=512KB `2`=1KB `3`=1B，决定 size 数值单位（日志 `unit val "2"` 即 1KB）。
 
@@ -476,7 +475,6 @@ mtd_arg_off(part_name,...)               ← 写入时反查 offset/size 
 
 - 同一份 mtdparts 三处复用：写入定位 / env / kernel cmdline —— 保证 U-Boot 与 kernel 对分区布局认知一致。
 
-  
 
 ### 抽象③：镜像模型 = raw / sparse + 可选验签
 
@@ -504,12 +502,7 @@ mtd_arg_off(part_name,...)               ← 写入时反查 offset/size 
 
 ```
 
-  
-
 ---
-
-  
-
 ## 六、NOR 落地细节
 
   
@@ -564,8 +557,6 @@ struct update_part_info {
 
 };
 
-  
-
 // SPL → U-Boot 的握手信息 (共享 IRAM 0x3E00, boot_info.h)
 
 struct boot_info {
@@ -590,114 +581,3 @@ struct boot_info {
 
 ---
 
-  
-
-## 八、设计权衡与边界（易踩点）
-
-  
-
-1. **storage_sel 依赖 SPL**：正常链无问题；一旦“直接 load U-Boot 调试”绕过 SPL，
-
-   `bootinfo` 全 0 → 误判 EMMC，升级/启动全走错分支。→ 需 `magic` 兜底
-
-   （`get_dl_and_boot_info` 按 `CONFIG_TARGET_AX525_*` 填）。
-
-  
-
-2. **mode 影响读文件方式**：`save_storage`(L798/964) 只在 `NORMAL/USB_UPDATE` 下用
-
-   `fat_size` 读真实大小；若启动阶段被 `sd_update_mode` 改成 `SD_UPDATE`，会走
-
-   `image_size`(恒 0) → 每文件读 0 字节、空刷。→ 命令入口强制 `USB_UPDATE`，或测时拔 SD。
-
-  
-
-3. **容量/分区双校验**：`bin_check` 挡“镜像 > 分区”；auto-resize 挡“分区总和 > Flash”。两道防越界。
-
-  
-
-4. **signed vs raw**：U 盘里 uboot 分区放 `u-boot_signed.bin`（带 Axera 头，走完整 SPL 链能解），
-
-   不是调试用的 raw `u-boot.bin` —— 两者别混。
-
-  
-
-5. **失败回退**：任一步失败 `goto normal_boot`，不 reboot，`usbupdate` 置 `retry`/`fail`，
-
-   尽量不把设备刷成砖。
-
-  
-
----
-
-  
-
-## 九、一句话总览
-
-  
-
-> `usb_storage_update` 是正式 U-Boot 里的**设备端 U 盘就地刷机**：以 **FAT 文件系统**为数据源、
-
-> **AX525_nor.xml** 为元数据（分区布局 + 镜像清单）、**`storage_sel` 单枚举**为介质抽象，
-
-> 把 raw/sparse 镜像经 **MTD/MMC** 落到 NOR/NAND/eMMC，全程用**容量/分区/签名**三重校验兜底，
-
-> 最后按 `boot_type` 设复位源重启进新系统。
-
-  
-
----
-
-  
-
-## 附：关键文件与符号索引
-
-  
-
-| 符号 | 作用 | 位置 |
-
-|---|---|---|
-
-| `do_usb_stor_update` | 命令入口/编排 | usb_storage_update.c:925 |
-
-| `usb_stor_update_save_storage` | 逐分区读写编排 | usb_storage_update.c:751 |
-
-| `usb_stor_update_to_storage` | 按 storage_sel 分发写入 | usb_storage_update.c:399 |
-
-| `usb_stor_update_to_spinor` | NOR 擦写实现 | usb_storage_update.c:329 |
-
-| `usb_stor_update_to_spinand` | NAND 擦写(跳坏块) | usb_storage_update.c:198 |
-
-| `usb_stor_update_to_emmc` | eMMC 写入 | usb_storage_update.c:77 |
-
-| `usb_stor_update_bin_check` | 存在性/大小校验 | usb_storage_update.c:575 |
-
-| `update_parse_xml` | 解析 XML 主流程 | axera_update.c:1705 |
-
-| `get_part_info_rawdata` | 分区表解析 | axera_update.c:1464 |
-
-| `get_part_image_name_xml` | 镜像文件名解析 | axera_update.c:1340 |
-
-| `get_capacity_user` | 介质容量(auto-resize) | axera_update.c:1402 |
-
-| `update_parts_info` | 生成 mtdparts/bootargs | axera_update.c:1619 |
-
-| `common_get_part_info` | 按介质查分区 offset/size | axera_update.c:159 |
-
-| `common_raw_erase` | 按介质擦除 | axera_update.c:1252 |
-
-| `update_verify_image` | 安全镜像验签/解密 | update_verify.c:22 |
-
-| `write_sparse_img` | sparse 镜像写入 | sparse_img.c:100 |
-
-| `set_reboot_mode_after_dl` | 设复位启动源 | axera_update.c:1889 |
-
-| `get_dl_and_boot_info` | 读 IRAM bootinfo(含兜底) | ax525.c:48 |
-
-| `reboot` | 触发芯片复位 | ax525.c:129 |
-
-| `struct update_part_info` | 分区+镜像内存模型 | axera_update.h:14 |
-
-| `struct boot_info` | SPL→U-Boot 握手(storage_sel) | boot_info.h |
-
-| `XML_NAME "AX525_nor.xml"` | U 盘元数据文件名 | axera_update.h:6 |
