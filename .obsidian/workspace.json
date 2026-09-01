@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/基本概念/USB2 PHY 眼图调试 Wiki.md",
+                "file": "USB/临时wiki.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "USB2 PHY 眼图调试 Wiki"
+              "title": "临时wiki"
             }
           }
         ]
@@ -195,8 +195,8 @@
   },
   "active": "85d6534de8323b9d",
   "lastOpenFiles": [
-    "USB/临时wiki.md",
     "USB/基本概念/USB2 PHY 眼图调试 Wiki.md",
+    "USB/临时wiki.md",
     "README.md",
     "USB/场景问题/usb device 插拔状态更新异常.md",
     "USB/Class/算力棒/SERVICE & DATA 通道数据面收发时序.md",
