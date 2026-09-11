@@ -1,948 +1,727 @@
-# USB3 PHY 眼图测试及配置调整 Wiki
+# UVC MJPEG 多请求流式发送（pump）接口说明
 
-## 一、眼图判读标准（Mask 模板）
+  
 
-### 1.1 眼图组成
+面向 UVC 应用开发，基于例程 `video_static_mjpeg_pump_template.c`。
 
-| 组成           | 是什么               | 作用              |
-| ------------ | ----------------- | --------------- |
-| 波形轨迹带（Trace） | 大量 UI 波形对齐叠加形成的轨迹 | 反映 TX 实际信号      |
-| Eye Mask     | 规范定义的禁止进入区域       | 判定最小眼高、眼宽       |
-| 电压限制         | 最大差分输出范围          | 判定摆幅、过冲和下冲      |
-| Eye Height   | 垂直方向开口            | 反映电压裕量          |
-| Eye Width    | 水平方向开口            | 反映时间和抖动裕量       |
-| Crossover    | P/N 翻转交叉区域        | 反映抖动、ISI 和差分对称性 |
-|              |                   |                 |
+  
 
-USB3 Gen1 的基本参数：
+## 0. 参考文件
 
-```text
-线路速率：5Gbps
-编码方式：8b/10b
-1 UI：200ps
-信号：SSTX+ / SSTX-
+  
+
+cherryusb 根目录：
+
+  
+
 ```
 
-USB3 的 UI 很小，因此参考时钟抖动、反射、通道损耗和 P/N 路径不对称都会明显影响眼图。
+kernel/rtos/rt-thread-lts-v4.1.x/components/drivers/usb/cherryusb/
+
+```
+
+  
+
+（`kernel/rtos_sdk/rt-thread-lts-v4.1.x/components/drivers/usb/cherryusb/` 下有一份完全相同的副本，两份内容一致）
+
+  
+
+| 内容 | 路径（相对 cherryusb 根目录） |
+
+| --- | --- |
+
+| 例程 | `demo/video_static_mjpeg_pump_template.c` |
+
+| 接口声明（**编译时需要加入 include 路径**） | `class/video/usbd_video.h`（第 35–87 行） |
+
+| 接口实现 | `class/video/usbd_video.c`（第 905–1136 行） |
+
+| 依赖的类型定义 | `class/video/usb_video.h`（描述符宏、`struct usbd_request` 等） |
+
+  
 
 ---
 
-### 1.2 USB3 Gen1 使用什么 Mask
+  
 
-USB3 Gen1 应选择测试仪器或合规软件中的：
+## 1. 这个接口解决什么问题
 
-```text
-SuperSpeed USB 5Gbps
-USB 3.0 / USB 3.2 Gen1
-Transmitter Eye Diagram Mask
-```
+  
 
-不能选择：
+旧接口 `usbd_video_stream_start_write()` 一次只让**一个 transfer 在飞**：应用交出一帧后，必须靠端点完成回调里调用 `usbd_video_stream_split_transfer()` 把下一段喂进去。等速（isochronous）端点对这一点很敏感 —— **某个 service interval 上没有准备好的 transfer，这个 interval 的数据就直接丢了，USB 不会重传**。而从"完成中断"到"重新组好一个 payload"的往返时间，塞不进一个 125µs 的微帧。
 
-```text
-USB2 High-Speed 480Mbps Mask
-USB 3.2 Gen2 10Gbps Mask
-PCIe 5GT/s Mask
-SATA 6Gbps Mask
-```
+  
 
-USB3 Gen1 的眼图判定主要包括：
+pump 接口把这件事挪进类内部：应用只递交**整帧**，拆帧、写 UVC payload header、以及在帧与帧之间的空隙里保持端点有包可发，全部由类完成。
 
-1. **Eye Opening Mask**
-   波形不能进入眼图中心禁区，用于判断最小眼高和最小眼宽。
+  
 
-2. **Differential Voltage Limit**
-   波形不能超过最大差分电压限制，用于判断 TX 摆幅、过冲和下冲。
+| | 旧接口 `usbd_video_stream_start_write` | pump 接口 `usbd_video_pump_*` |
 
-3. **Jitter Limit**
-   需要结合时钟恢复和规定 BER 下的抖动结果判断，不能只看静态 Mask 截图。
+| --- | --- | --- |
 
-示意如下：
+| 应用交出 | 单帧 + 自己反复调 `split_transfer` | 整帧，一次调用 |
 
-```text
-差分电压上限
-────────────────────────────────
+| 同时在飞的请求 | 1 个 | `nreq` 个（例程 8 个） |
 
-          /----------------\
-         /                  \
-        /                    \
-       /      Eye Mask        \
-      <        禁止区           >
-       \                      /
-        \                    /
-         \                  /
-          \----------------/
+| 帧间空隙 | 应用自己保证 | ISO 自动补 0 长度 payload 占位 |
 
-────────────────────────────────
-差分电压下限
-```
+| 端点注册 | 应用 `usbd_add_endpoint()` | 类内部注册，应用不要注册 |
 
-判定规则：
+| 完成通知 | `ep_cb(nbytes)`，按 payload | `usbd_video_pump_frame_done()`，按整帧 |
 
-```text
-波形冲出上下电压限制       -> Fail
-波形进入中心 Eye Mask      -> Fail
-眼高或眼宽低于要求         -> Fail
-抖动超过对应项目限制       -> Fail
-```
+| 帧 ID（frameIdentifier） | 类内 `stream_frameid` | 类内 `stream_frameid`（每帧翻转） |
 
-USB3 Mask 的横坐标以 UI 为单位，纵坐标以差分电压为单位：
+| 缓冲区生命周期 | 应用自己管 | 类管，靠 `frame_done` 归还 |
 
-```text
-Gen1：1 UI = 200ps
-Gen2：1 UI = 100ps
-```
+  
+
+旧接口保留未动，两条路可共存。
+
+  
 
 ---
 
-### 1.3 测试点与参考面
+  
 
-USB3 的 Eye Mask 必须和测试参考面配套使用。
+## 2. 应用需要实现的回调
 
-常见测试点：
+  
 
-| 测试点 | 位置 | 主要用途 |
-|---|---|---|
-| TP1 | TX 输出侧、近端参考面 | 检查 PHY/连接器发送质量 |
-| TP4 | Compliance Channel 后的接收侧参考面 | 检查通道损耗后的接收眼图 |
-| Near-end | DUT 连接器附近 | 暴露过冲、幅度过大、阻抗失配 |
-| Far-end | 经过规定通道或线缆后 | 暴露损耗、ISI、眼高/眼宽不足 |
+三个都是 `__WEAK`，应用同名实现即覆盖。
 
+  
+
+```c
+
+/* 主机把 VS 接口切到 alternate setting 1（开始取流）/ 切回 0（停止）时调用 */
+
+void usbd_video_open (uint8_t busid, uint8_t intf);
+
+void usbd_video_close(uint8_t busid, uint8_t intf);
+
+  
+
+/* 一帧发完、缓冲区可以复用。不是每个 payload 一次，是每帧一次 */
+
+void usbd_video_pump_frame_done(uint8_t busid, uint8_t ep, uint8_t *frame, int status);
+
+  
+
+/* 通用 USB 设备事件，传给 usbd_initialize() */
+
+static void usbd_event_handler(uint8_t busid, uint8_t event);
+
+```
+
+  
+
+### 运行上下文（重要）
+
+  
+
+当前工程 **没有** 定义 `CONFIG_USBDEV_VIDEO_PUMP_THREAD`（`bsp/ax615/rtconfig.h` 中无此宏），因此 pump 走的是**非线程**分支：
+
+  
+
+- `usbd_video_pump_run()` 直接在**端点完成回调 / 中断上下文**里执行（`usbd_video.c:1009`）
+
+- 所以 `usbd_video_pump_frame_done()`、`usbd_video_open()`、`usbd_video_close()` **都在中断上下文被调用**
+
+- 这三个回调里**不要阻塞、不要 `usb_osal_msleep`、不要做重活**。需要唤醒生产者线程，就给信号量 / 置标志位
+
+- `usbd_video_open` / `close` 是从 `video_notify_handler` 的 `USBD_EVENT_SET_INTERFACE` 分支里调的（`usbd_video.c:709-722`），同样是中断上下文
+
+  
+
+如果希望这些回调在线程里跑，定义下面三个宏并重新编译，类会自动创建名为 `uvc_pump` 的线程：
+
+  
+
+```c
+
+CONFIG_USBDEV_VIDEO_PUMP_THREAD
+
+CONFIG_USBDEV_VIDEO_PUMP_STACKSIZE   /* 线程栈大小 */
+
+CONFIG_USBDEV_VIDEO_PUMP_PRIO        /* 线程优先级 */
+
+```
+
+  
+
+### `usbd_video_close` 与总线事件
+
+  
+
+`usbd_event_handler` 里收到 `USBD_EVENT_CONFIGURED` / `USBD_EVENT_DISCONNECTED` 时，**应用自己要清掉本地的 streaming 标志**（例程 `:94-105`）。类内部的 `pump->streaming` 不会被复位事件清零，所以应用侧标志是生产者循环唯一的可靠闸门 —— 不过 `submit()` 内部还有 `usb_device_is_configured()` 兜底，最坏情况返回 `-USB_ERR_NOTCONN` 而不是发坏数据。
+
+  
 
 ---
 
-### 1.4 USB3 Mask 坐标与软件加载
+  
 
-USB3 Gen1 Mask 的正式顶点坐标、参考接收机、时钟恢复、滤波和抖动算法，应由以下内容共同决定：
+## 3. 初始化流程
 
-- USB 3.x Electrical Specification
-- USB-IF Electrical Compliance Test Specification
-- 测试仪器对应版本的 USB3 Compliance Application
-- 当前选择的 TP1、TP4、Host、Device 和通道模型
+  
+
+严格按这个顺序（例程 `video_init()`，`:140-168`）：
+
+  
+
+```c
+
+void video_init(uint8_t busid, uintptr_t reg_base)
+
+{
+
+    struct usbd_video_pump_cfg cfg = { 0 };
+
+  
+
+    usbd_desc_register(busid, video_descriptor);                    /* 1. 描述符 */
+
+  
+
+    usbd_add_interface(busid, usbd_video_init_intf(
+
+        busid, &intf0, INTERVAL, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE)); /* 2. VC 接口 */
+
+    usbd_add_interface(busid, usbd_video_init_intf(
+
+        busid, &intf1, INTERVAL, MAX_FRAME_SIZE, MAX_PAYLOAD_SIZE)); /* 2. VS 接口 */
+
+  
+
+    for (unsigned i = 0; i < PUMP_NREQ; i++)                        /* 3. 填 cfg */
+
+        pump_payload_ptr[i] = pump_payload[i];
+
+    cfg.reqs         = pump_reqs;
+
+    cfg.payloads     = pump_payload_ptr;
+
+    cfg.nreq         = PUMP_NREQ;
+
+    cfg.payload_size = MAX_PAYLOAD_SIZE;
+
+    cfg.frames       = pump_frames;
+
+    cfg.nframe       = PUMP_NFRAME;
+
+    cfg.ep_type      = USB_ENDPOINT_TYPE_ISOCHRONOUS;
+
+  
+
+    if (usbd_video_pump_init(busid, VIDEO_IN_EP, &cfg) < 0) {       /* 4. pump */
+
+        USB_LOG_ERR("video pump init failed\r\n");
+
+        return;
+
+    }
+
+  
+
+    usbd_initialize(busid, reg_base, usbd_event_handler);           /* 5. 启动 */
+
+}
+
+```
+
+  
+
+**`usbd_video_pump_init()` 必须在 `usbd_initialize()` 之前调用。**
+
+  
+
+### `usbd_video_init_intf()`
+
+  
+
+```c
+
+struct usbd_interface *usbd_video_init_intf(uint8_t busid, struct usbd_interface *intf,
+
+                                            uint32_t dwFrameInterval,        /* 单位 100ns，30fps -> 333333 */
+
+                                            uint32_t dwMaxVideoFrameSize,    /* 最大单帧字节数 */
+
+                                            uint32_t dwMaxPayloadTransferSize); /* 最大单个 payload */
+
+```
+
+  
+
+这两个值会作为 PROBE/COMMIT 的默认值报给主机（`usbd_video.c:731-765`）。VC 和 VS 两个接口都要注册（例程注册了 `intf0` / `intf1`），它们共用同一份 probe/commit 状态，所以两处传**相同**的参数即可。返回值恒为 `intf`，不会失败。
+
+  
 
 ---
 
-### 1.5 USB3 Compliance Pattern
+  
 
-USB3 PHY TX 测试不是使用 USB2 的 `test_packet`，而是进入 SuperSpeed Compliance Mode，发送 Compliance Pattern。
+## 4. `struct usbd_video_pump_cfg` 逐字段
 
-常见码型：
+  
 
-| Pattern | 主要用途 |
-|---|---|
-| CP0 | 加扰数据码型，常用于眼图和抖动测试 |
-| CP1 | 固定数据特征，辅助抖动和数据相关分析 |
-| CP2～CP8 | 用于不同电气参数、周期性码型或调试项目 |
+```c
 
-不同规范版本和仪器可能对具体测试项目选择不同 CP，正式测试以合规软件提示为准。
+struct usbd_video_frame {
 
-USB3 Compliance Mode 通常通过以下方式进入：
+    uint8_t *buf;
 
-- USB3 Compliance Fixture
-- Polling.Compliance 状态
-- LFPS/Ping.LFPS 切换 Compliance Pattern
-- 控制器或 PHY 专用测试寄存器
-- 平台私有 debugfs、sysfs 或测试工具
+    uint32_t len;
 
-USB3 没有所有平台通用的：
+};
 
-```bash
-echo test_packet > .../testmode
+  
+
+struct usbd_video_pump_cfg {
+
+    struct usbd_request *reqs;      /* nreq 个请求描述符，由应用提供 */
+
+    uint8_t            **payloads;  /* nreq 个 payload 缓冲指针，与 reqs 一一对应 */
+
+    uint8_t              nreq;      /* 请求池深度 = 同时在飞的 payload 数 */
+
+    uint32_t             payload_size; /* 单个 payload 字节数，**含** UVC header */
+
+    struct usbd_video_frame *frames;/* nframe 个帧槽位，类内部使用 */
+
+    uint8_t              nframe;    /* 帧队列深度 */
+
+    uint8_t              ep_type;   /* ISOCHRONOUS 或 BULK，必须与描述符一致 */
+
+};
+
 ```
 
-该命令更常见于 USB2 Test Packet。USB3 应查看当前 DWC3、xHCI、PHY 驱动或芯片平台的测试接口。
+  
+
+| 字段 | 谁填 | 说明 |
+
+| --- | --- | --- |
+
+| `reqs` | 应用 | `static struct usbd_request reqs[nreq];` 内容不必初始化，`pump_init` 会 `memset` 并设好 `buf` 与 `complete` |
+
+| `payloads` | 应用 | `payloads[i]` 指向一块**至少 `payload_size` 字节**的缓冲，不能为 NULL |
+
+| `nreq` | 应用 | 建议 ≥ 4；越大越能扛调度抖动，代价是内存 |
+
+| `payload_size` | 应用 | 必须 `> 12`（UVC header 长度），且与端点 `wMaxPacketSize` / `dwMaxPayloadTransferSize` 自洽 |
+
+| `frames` | 应用 | 只需提供数组，内容由类的 `submit()` 填写，**应用不要碰** |
+
+| `nframe` | 应用 | 帧队列深度，决定 `submit()` 能被接受几帧 |
+
+| `ep_type` | 应用 | ISO → 无帧可发时补 0 长度包占住 interval；Bulk → 直接暂停等下一帧 |
+
+  
+
+### `usbd_video_pump_init()` 的校验规则
+
+  
+
+返回 `0` 成功，负 errno 失败（`usbd_video.c:1027-1075`）：
+
+  
+
+- `cfg` / `cfg->reqs` / `cfg->payloads` / `cfg->frames` 任一为 NULL → `-USB_ERR_INVAL`
+
+- `nreq == 0` 或 `nframe == 0` → `-USB_ERR_INVAL`
+
+- `payload_size <= 12` → `-USB_ERR_INVAL`
+
+- `ep_type` 既不是 ISO 也不是 BULK → `-USB_ERR_INVAL`
+
+- `payloads[i] == NULL` → `-USB_ERR_INVAL`
+
+  
+
+另外：**类自己会注册这个端点**，应用不要再对它调用 `usbd_add_endpoint()`（例程 `:158-162` 的注释）。也因此不存在"应用忘记续流"导致流停掉的路径。
+
+  
 
 ---
 
-### 1.6 近端与远端必须结合判断
+  
 
-| 测试点 | 主要暴露 | 调整倾向 |
-|---|---|---|
-| 近端 | 摆幅过大、过冲、振铃、边沿过快 | 倾向“减” |
-| 远端 | 通道损耗、ISI、眼高/眼宽不足 | 倾向“加均衡” |
-| RX 端 | RX EQ、终端、CDR 和信号检测问题 | 调 RX 参数 |
+## 5. `usbd_video_pump_submit()` —— 递交一帧
 
-推荐顺序：
+  
 
-```text
-先解决近端过冲、振铃和幅度超限
-再解决远端眼高、眼宽和接收误码
+```c
+
+int usbd_video_pump_submit(uint8_t busid, uint8_t ep, uint8_t *frame, uint32_t len);
+
 ```
 
-近端已经过冲时继续增加 TX swing 或 TX de-emphasis，通常会使问题更严重。
+  
+
+立即返回，帧在后台发送。检查顺序与返回值（`usbd_video.c:1077-1106`）：
+
+  
+
+| 返回 | 条件 |
+
+| --- | --- |
+
+| `0` | 帧已入队 |
+
+| `-USB_ERR_INVAL` | `frame == NULL` 或 `len == 0`；`ep` 与 `pump_init` 时不一致；`pump_init` 未成功 |
+
+| `-USB_ERR_NOTCONN` | 主机尚未 `SET_INTERFACE(alt=1)`（未开始取流）或设备未被配置 |
+
+| `-USB_ERR_BUSY` | 帧队列满（`frame_count >= nframe`），即主机消费不过来 |
+
+  
+
+### 缓冲区所有权（关键）
+
+  
+
+```
+
+应用可写  ──submit() 成功──►  类/控制器只读  ──frame_done()──►  应用可写
+
+```
+
+  
+
+- **`submit()` 返回 0 之后，到 `frame_done()` 报告这一帧之前，`frame` 指向的内存应用不可写**。这是 DMA 正在读的数据，提前覆盖会花屏或撕裂
+
+- 只有返回 `0` 才移交所有权。返回 `-USB_ERR_BUSY` / `-USB_ERR_INVAL` 时所有权还在应用手里，可以立刻重试或丢弃
+
+- `len` **没有上限校验**，类比不对照 `dwMaxVideoFrameSize` 或描述符里的 `MAX_FRAME_SIZE`。超长帧照样会被发出去，是否合法由应用自己保证
+
+  
+
+### 队列深度怎么选
+
+  
+
+- `nframe` 决定 `submit()` 能被接受几帧。例程取 2，配合"两个帧缓冲轮转 + `-USB_ERR_BUSY` 时跳过本次采集"的策略
+
+- `nreq` 决定同时在飞的 payload 数。HS 下 8 × 3072B ÷ 约 24.6MB/s ≈ **1ms** 的抗抖动窗口，也就是被调度晚 1ms 也不会丢 interval
+
+  
 
 ---
 
-## 二、违规现象 → 病因 → 药方总表
+  
 
-核心逻辑：先看波形在哪里违规，再决定调哪类寄存器。
+## 6. 内存与缓冲区要求
 
-| # | 违规现象 | 本质 | 主要病因 | 第一药方 | 第二药方 |
-|---:|---|---|---|---|---|
-| 1 | 冲出上/下电压限制 | 幅度过大或过冲 | TX swing 大、边沿快、去加重强 | `TXSWING`↓ | `TXSLEW`放缓、`TXDEEMPH`↓ |
-| 2 | 上下顶进 Eye Mask | 眼高不足 | TX 幅度低、通道损耗、均衡不足 | `TXSWING`↑ | 远端调 `TXDEEMPH`、`RXEQ` |
-| 3 | 左右挤进 Eye Mask | 眼宽不足 | 抖动、ISI、反射 | 查 `REFCLK/PLL` | 调 `TXDEEMPH`、终端和通道 |
-| 4 | 近端正常、远端闭眼 | 高频损耗 | 走线、连接器、线缆损耗 | `TXDEEMPH`↑ | `RXCTLE/RXEQ`↑ |
-| 5 | 过冲、下冲明显 | 边沿过快或失配 | TX slew、输出阻抗、通道不连续 | `TXSLEW`放缓 | 调 `TXTERM/TXIMP` |
-| 6 | 周期性振铃 | 反射 | 阻抗失配、过孔、stub、连接器 | 调 `TXTERM/TXIMP` | `TXSLEW`放缓 |
-| 7 | 波形发毛、轨迹变厚 | 噪声或抖动 | 电源、参考时钟、串扰 | 查电源和 refclk | 查 PLL、SSC 和布局 |
-| 8 | Crossover 上下偏移 | 差分/共模不对称 | P/N 驱动、偏置、布局不对称 | `TXCROSSOVER/TXCM` | 查 P/N 和 AC 电容 |
-| 9 | Crossover 左右扩散 | 抖动或延迟不对称 | PLL、P/N skew、反射 | 查 `REFCLK/PLL` | 调终端、均衡 |
-| 10 | 跳变后幅度恢复慢 | 高频损耗或 EQ 不足 | 通道损耗、post-cursor 不足 | `TXPOSTCURSOR`↑ | `RXCTLE`↑ |
-| 11 | 短线正常、长线失败 | 通道补偿不足 | TX/RX EQ 太小 | `TXDEEMPH`↑ | `RXEQ`↑ |
-| 12 | 长线正常、短线失败 | 过补偿 | TX/RX EQ 太强 | `TXDEEMPH`↓ | `RXEQ`↓ |
-| 13 | 眼图正常但误码高 | RX/CDR 问题 | RX EQ、CDR、SSC、电源噪声 | 调 `RXEQ/CDR` | 查时钟和供电 |
-| 14 | 无法进入 U0 | 链路训练问题 | RX termination、LFPS、检测门限 | 查 `RXTERM/LFPS` | 查 TX/RX 连接和 polarity |
-| 15 | 频繁进入 Recovery | 接收裕量不足 | RX EQ、CDR、通道损耗 | 调 `RXEQ/CDR` | 查 refclk、SSC、通道 |
-| 16 | 随机降为 USB2 | SuperSpeed 链路失效 | LFPS、RX detect、误码、供电 | 查链路状态 | 调检测门限和 RX EQ |
+  
 
-### 三个关键判断
+### payload 缓冲（必须）
 
-#### 上下方向有两种相反的问题
+  
 
-```text
-冲出外部电压限制 = 幅度或过冲太大 -> 减
-顶进中心 Eye Mask = 眼高不足       -> 加
+```c
+
+USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t pump_payload[PUMP_NREQ][MAX_PAYLOAD_SIZE];
+
 ```
 
-#### 去加重是双刃剑
+  
 
-```text
-远端高频损耗、ISI -> 增大去加重
-近端过冲、短通道过补偿 -> 减小去加重
-```
+- **必须非 cache（或按平台方式做过 cache 维护）+ cache line 对齐**
 
-#### 左右闭眼优先查抖动和 ISI
+- 不能与其它数据共享同一条 cache line，否则 cache 回写会踩坏相邻数据
 
-```text
-眼宽不足 -> 先查 refclk、PLL、SSC、反射和通道
-```
+- 这些缓冲由 DMA 直接读取，`pump_init` 只把指针存起来，不做任何拷贝或重定位
 
-不要优先用 `TXSWING` 处理纯眼宽问题。
+- 例程把"怎么分配、什么属性"留给应用，因为对齐与 cache 属性是平台决策（`:70-78` 的注释）
+
+  
+
+### 帧缓冲
+
+  
+
+类内部是 `usb_memcpy()` 从 `frame->buf` 拷到 payload（`usbd_video.c:934`），即**帧缓冲只被 CPU 读**。所以：
+
+  
+
+- 如果帧是 CPU 采集/编码写进去的 → 普通内存即可
+
+- 如果帧由 **ISP / 硬件编码器 / DMA 写** → 同样需要非 cache + 对齐，否则 CPU 读到的可能是旧数据
+
+  
+
+例程统一加了 `USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX`（`:87`），跟随这个写法最省事。
+
+  
+
+### 生命周期
+
+  
+
+`cfg` 结构体本身会被**拷贝**进类内（`pump->cfg = *cfg`），但 **`cfg` 指向的所有数组和缓冲区不会被拷贝**。它们必须在整个 streaming 期间保持有效 —— 例程用 `static` 数组正是这个原因。
+
+  
 
 ---
 
-## 三、常见 PHY 寄存器详解
+  
 
-> 字段数值增大不一定代表物理量增大。例如某些 PHY 中 `TXTERM` 数值增大代表阻抗减小。修改前必须确认字段编码。
+## 7. 描述符与端点约束
+
+  
+
+### 端点类型必须自洽
+
+  
+
+`cfg.ep_type` 必须和描述符里的端点属性一致：
+
+  
+
+| ep_type | 端点描述符属性 | 无帧可发时的行为 |
+
+| --- | --- | --- |
+
+| `USB_ENDPOINT_TYPE_ISOCHRONOUS` | `0x05` | 提交 0 长度 payload 占住 service interval（`:978-980`） |
+
+| `USB_ENDPOINT_TYPE_BULK` | `0x02` | 暂停发，等下一帧（`:981-984`） |
+
+  
+
+例程用的是 ISO：`USB_ENDPOINT_DESCRIPTOR_INIT(VIDEO_IN_EP, 0x05, VIDEO_PACKET_SIZE, 0x01)`。
+
+  
+
+### `payload_size` 与端点包大小的关系（HS）
+
+  
+
+```c
+
+#define MAX_PAYLOAD_SIZE  3072                                          /* 3 个 transaction */
+
+#define VIDEO_PACKET_SIZE (unsigned int)(((MAX_PAYLOAD_SIZE / 3)) | (0x02 << 11))
+
+/*                              = 1024 字节/微帧      | wMaxPacketSize[12:11] = 2 → 3 transactions */
+
+```
+
+  
+
+`wMaxPacketSize` 的 bit[12:11] 表示**每微帧的 transaction 数**：
+
+  
+
+- 1 个 transaction/微帧 → 上限 1024B/125µs ≈ **8.2 MB/s**（大帧不够用）
+
+- 3 个 transaction/微帧 → 约 **24.6 MB/s**
+
+  
+
+Full Speed 分支是单 transaction、1020 字节/1ms 间隔。
+
+  
+
+### 几个容易踩的点
+
+  
+
+1. **`dwMaxPayloadTransferSize` 不会回灌到 pump**。主机在 PROBE/COMMIT 里协商出的值只更新 `probe`/`commit` 结构，pump 始终按 `cfg.payload_size` 切分。所以传给 `usbd_video_init_intf()` 的 `dwMaxPayloadTransferSize` 应与 `cfg.payload_size` 保持一致，不要指望运行时被主机改小。
+
+2. **`VIDEO_INT_EP (0x83)` 实际没被用到**。描述符用的是 `VIDEO_VC_NOEP_DESCRIPTOR_INIT`，它产出的 VC 接口 `bNumEndpoints = 0`，宏内部也没有引用传入的端点地址。别以为设备上报了中断端点。
+
+3. **`open` / `close` 不区分接口号**。`video_notify_handler` 收到任何 `SET_INTERFACE` 都按 alt 值分发（`usbd_video.c:709-722`）。正常取流顺序下（先给控制接口设 alt 0，再给 VS 接口设 alt 1）不会出问题，但如果主机在取流过程中对控制接口做 `SET_INTERFACE(alt=0)`，会触发一次多余的 `close()`。应用侧对 `close()` 做幂等处理即可。
+
+4. **Bulk 端点需要 ZLP**。代码对 bulk 请求设了 `req->zero = 1`，由控制器在必要时补零长包（`:987`），应用不用管。
+
+  
 
 ---
 
-### 3.1 TX 主摆幅
+  
 
-#### `TXSWING` / `TXAMPLITUDE` / `TXVREF`
+## 8. 生产者线程写法
 
-控制 USB3 TX 差分主摆幅。
+  
 
-主要影响：
+例程 `video_test()`（`:171-199`）的标准模式 —— 两个帧缓冲轮转：
 
-- Eye Height
-- 最大差分电压
-- 远端接收裕量
-- 过冲和 EMI
+  
 
-调节方向：
+```c
 
-```text
-近端、远端眼高都不足 -> ↑
-近端冲出电压限制     -> ↓
-过冲、下冲明显       -> 谨慎降低
+#define PUMP_NFRAME 2
+
+USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t frame_buffer[2][32 * 1024];
+
+static volatile bool frame_in_use[2];
+
+static volatile bool streaming;
+
+  
+
+void video_test(uint8_t busid)
+
+{
+
+    unsigned slot = 0;
+
+  
+
+    while (1) {
+
+        if (!streaming) {                    /* 主机还没取流 */
+
+            usb_osal_msleep(1);
+
+            continue;
+
+        }
+
+        if (frame_in_use[slot]) {            /* 两个缓冲都还在总线上 */
+
+            usb_osal_msleep(1);              /* 跳过本次采集，别覆盖 DMA 正在读的数据 */
+
+            continue;
+
+        }
+
+  
+
+        /* ▼ 真实应用在这里把一帧填进 frame_buffer[slot]（采集/编码/DMA） */
+
+        usb_memcpy(frame_buffer[slot], cherryusb_mjpeg, sizeof(cherryusb_mjpeg));
+
+  
+
+        frame_in_use[slot] = true;           /* 先置位，再提交 */
+
+        if (usbd_video_pump_submit(busid, VIDEO_IN_EP, frame_buffer[slot],
+
+                                   sizeof(cherryusb_mjpeg)) < 0) {
+
+            frame_in_use[slot] = false;      /* 队列满 / 流已停：丢弃本帧，下轮重试 */
+
+            usb_osal_msleep(1);
+
+            continue;
+
+        }
+
+        slot ^= 1U;                          /* 切换缓冲 */
+
+        usb_osal_msleep(1000 / CAM_FPS);     /* 30fps 节拍 */
+
+    }
+
+}
+
+  
+
+void usbd_video_pump_frame_done(uint8_t busid, uint8_t ep, uint8_t *frame, int status)
+
+{
+
+    for (unsigned i = 0; i < 2; i++) {
+
+        if (frame_buffer[i] == frame) {      /* 靠指针认领是哪个槽位 */
+
+            frame_in_use[i] = false;
+
+            break;
+
+        }
+
+    }
+
+}
+
 ```
 
-注意：
+  
 
-- 近端正常、远端不足，不一定要增加 TX swing。
-- 如果是通道高频损耗，优先调 TX de-emphasis。
-- TX swing 过大可能增加反射和共模噪声。
+要点：
+
+  
+
+- `frame_in_use` 必须在 `submit()` **之前**置位，否则 `frame_done` 可能在置位前就把标志清了
+
+- `frame_done` 的参数就是当初 `submit` 传进去的 `frame` 指针，靠它反查槽位
+
+- 不要指望 ISO 丢帧能重传 —— 只能靠 `nreq` 深度和补零包把 interval 填住
+
+- `status` 为 0 表示整帧发完；负数表示被取消或被控制器打断（当前实现只在成功路径回调，`status` 恒为 0）
+
+  
 
 ---
 
-### 3.2 TX 去加重与发送均衡
+  
 
-#### `TXDEEMPH` / `TXDEEMPHASIS` / `TXEQ`
+## 9. 排查速查
 
-控制发送端去加重强度，用于补偿通道高频损耗。
+  
 
-调节方向：
+| 现象 | 可能原因 |
 
-```text
-远端眼高不足、ISI 明显 -> ↑
-远端眼宽因 ISI 变窄   -> 适当 ↑
-近端过冲、振铃        -> ↓
-短通道过补偿          -> ↓
-```
+| --- | --- |
 
-USB3 Gen1 常见去加重配置会以 dB 或离散档位表示，例如：
+| `submit()` 一直返回 `-USB_ERR_NOTCONN` | 主机没做 `SET_INTERFACE(alt=1)`；或设备未配置（枚举失败） |
 
-```text
-No de-emphasis
-约 -3.5dB
-约 -6dB
-```
+| `submit()` 频繁返回 `-USB_ERR_BUSY` | 主机取流速度跟不上生产速度 → 提高 `nframe`，或降低帧率/分辨率 |
 
-具体档位以 PHY 定义为准。
+| 画面花屏、撕裂 | payload 缓冲没配成非 cache，或没做 cache line 对齐；或帧缓冲在 `frame_done` 之前被改写 |
 
-#### `TXMAINCURSOR`
+| 画面卡顿、周期性丢帧 | `nreq` 太浅，扛不住调度抖动；或生产者线程优先级太低、节拍不稳 |
 
-控制主游标幅度。
+| `pump_init` 返回 `-USB_ERR_INVAL` | `payload_size <= 12`；`nreq`/`nframe` 为 0；某条 `payloads[i]` 为 NULL；`ep_type` 写错 |
 
-影响：
+| 主机看不到流 | 端点描述符属性与 `ep_type` 不符（ISO 要 `0x05`，Bulk 要 `0x02`）；`wMaxPacketSize` 的 transaction 数不够 8.2MB/s |
 
-- 主脉冲幅度
-- 整体 Eye Height
-- 与 pre/post-cursor 的幅度分配
-
-#### `TXPOSTCURSOR`
-
-控制跳变后符号的补偿。
-
-适用情况：
-
-```text
-远端跳变后收敛慢
-后游标 ISI 明显
-长通道高频损耗
-```
-
-#### `TXPRECURSOR`
-
-控制跳变前符号的补偿，部分 USB3 PHY 支持。
-
-适用情况：
-
-```text
-前游标 ISI 明显
-接收端眼图左右不对称
-通道模型需要前向补偿
-```
-
-注意：
-
-- `pre-cursor`、`main-cursor`、`post-cursor` 通常相互影响。
-- 增加 EQ 后可能需要重新调整主摆幅。
-- 字段可能采用符号数或补码，不能直接按数值大小判断方向。
+  
 
 ---
 
-### 3.3 TX 边沿速率
+  
 
-#### `TXSLEW` / `TXRISETUNE` / `TXFALLTUNE`
+## 10. 例程参数一览（HS 分支，640×480@30）
 
-控制 TX 上升沿和下降沿速度。
+  
 
-调节方向：
+```c
 
-```text
-过冲、下冲、振铃、EMI 大 -> 放缓
-边沿过慢、交叉区过宽     -> 加快
+#define VIDEO_IN_EP   0x81          /* 流端点 */
+
+#define VIDEO_INT_EP  0x83          /* 未实际使用，见 §7.2 */
+
+  
+
+#define MAX_PAYLOAD_SIZE  3072      /* 3 transaction × 1024B */
+
+#define VIDEO_PACKET_SIZE (1024 | (0x02 << 11))
+
+  
+
+#define WIDTH  640
+
+#define HEIGHT 480
+
+#define CAM_FPS 30
+
+#define INTERVAL       (10000000 / CAM_FPS)              /* 333333，单位 100ns */
+
+#define MIN_BIT_RATE   (640 * 480 * 16 * 30)
+
+#define MAX_BIT_RATE   (640 * 480 * 16 * 30)
+
+#define MAX_FRAME_SIZE (640 * 480 * 2)                   /* 614400 */
+
+  
+
+#define PUMP_NREQ   8               /* 请求池：约 1ms 抗抖动 */
+
+#define PUMP_NFRAME 2               /* 帧队列深度 */
+
 ```
-
-边沿过快：
-
-- 激发过孔、连接器和 stub 反射
-- 过冲、下冲加重
-- 串扰和 EMI 增大
-
-边沿过慢：
-
-- 眼宽减小
-- Crossover 轨迹变厚
-- 高频分量不足
-- ISI 增加
-
-如果 PHY 分别提供 rise/fall 配置，还需要检查两个方向是否对称。
-
----
-
-### 3.4 TX 输出阻抗
-
-#### `TXTERM` / `TXIMP` / `TXDRVIMP` / `TXRESCODE`
-
-控制 TX 输出阻抗或源端终端。
-
-适用问题：
-
-```text
-周期性振铃
-反射分支明显
-过冲后多次回摆
-不同线缆下波形差异很大
-```
-
-调试方法：
-
-1. 从 PHY 推荐默认值开始。
-2. 向相邻档位单步调整。
-3. 比较振铃幅度和衰减时间。
-4. 同时观察近端和远端。
-5. 必要时结合 TDR 或 S 参数确认。
-
-阻抗问题不能只靠降低 TX swing 掩盖。
-
----
-
-### 3.5 TX 共模与 Crossover
-
-#### `TXCROSSOVER` / `TXCM` / `TXCMV` / `TXVCOM`
-
-控制发送共模电压或交叉点。
-
-适用问题：
-
-```text
-正、负摆幅不对称
-Crossover 上下偏移
-眼图上下不对称
-共模噪声明显
-```
-
-同时检查：
-
-- P/N 走线长度与结构
-- P/N 过孔数量
-- AC 耦合电容容值和焊盘
-- 连接器 P/N 结构
-- PHY 模拟电源和偏置
-- 差分到共模转换
-
-如果 P/N 板级结构不对称，寄存器只能做有限补偿。
-
----
-
-### 3.6 RX CTLE 与均衡
-
-#### `RXEQ` / `RXCTLE` / `RXHFEQ`
-
-控制 RX 高频增益，补偿通道高频损耗。
-
-调节方向：
-
-```text
-长线、高损耗、远端高频塌陷 -> ↑
-短线、高频噪声被放大       -> ↓
-```
-
-均衡不足：
-
-- 长线误码
-- 频繁 Recovery
-- CDR 锁定不稳定
-- 短线正常、长线失败
-
-均衡过强：
-
-- 高频噪声放大
-- 短线过补偿
-- CDR 输入抖动增大
-- 短线反而失败
-
-#### `RXAFEGAIN` / `RXVGA`
-
-控制 RX 模拟前端或可变增益放大器。
-
-适用问题：
-
-```text
-RX 输入幅度偏低
-长通道接收灵敏度不足
-```
-
-增益过高也可能放大噪声。
-
----
-
-### 3.7 RX DFE 与自适应均衡
-
-#### `RXDFE`
-
-使用判决反馈方式消除后游标 ISI。
-
-适用问题：
-
-- 高损耗通道
-- 后游标拖尾明显
-- CTLE 单独调节无法满足 BER
-
-#### `RXADAPT` / `RXEQADAPT`
-
-控制 RX 自动均衡。
-
-需要确认：
-
-- 自适应是否启动
-- 是否成功收敛
-- 软件固定值是否覆盖自适应结果
-- Recovery 后是否重新训练
-- 不同线缆下收敛值是否合理
-
-调试时可以分别测试：
-
-```text
-固定 RX EQ
-自动 RX EQ
-自动 EQ 收敛后锁定
-```
-
----
-
-### 3.8 RX 终端与接收检测
-
-#### `RXTERM` / `RXTERMCTRL` / `RXRESCODE`
-
-控制 RX 输入终端。
-
-可能影响：
-
-- 输入反射
-- 接收幅度
-- 共模转换
-- 链路训练
-- Receiver Detection
-
-典型问题：
-
-```text
-TX 近端正常，RX 端振铃
-无法稳定识别对端
-链路训练失败
-```
-
-#### `RXDET` / `RXDETECT`
-
-控制或校准 Receiver Detection。
-
-适用问题：
-
-- 检测不到对端终端
-- 误判对端存在
-- SuperSpeed 初始化失败
-- 端口反复进行接收检测
-
----
-
-### 3.9 RX Squelch、LOS 与门限
-
-#### `RXSQUELCH` / `RXLOS` / `RXSIGDET`
-
-控制有效信号检测门限。
-
-门限过低：
-
-```text
-噪声被识别为有效信号
-空闲时误触发
-链路状态异常切换
-```
-
-门限过高：
-
-```text
-弱信号检测不到
-长线频繁掉链
-无法稳定进入 U0
-```
-
-该类寄存器通常不改变 TX 眼图，但会影响功能和链路稳定性。
-
----
-
-### 3.10 LFPS 检测
-
-#### `LFPSDET` / `LFPSVTH` / `LFPSWIDTH` / `LFPSRX`
-
-控制 LFPS 幅度、周期或脉宽检测。
-
-适用问题：
-
-- 无法进入 Polling
-- 无法进入 U0
-- U1/U2/U3 切换异常
-- Resume/Wakeup 异常
-- 频繁 Recovery
-- 高速 TX 眼图正常但链路仍失败
-
-LFPS 是低频周期信号，必须与 5Gbps 数据眼图分开测试和判断。
-
----
-
-### 3.11 参考时钟与 PLL
-
-常见字段：
-
-```text
-REFCLKSEL
-FSEL
-PLLFREQ
-PLLBW
-PLLCP
-PLLLOCK
-```
-
-眼宽不足或轨迹左右变厚时，优先检查：
-
-- 参考时钟频率是否正确
-- REFCLK 来源是否选择正确
-- 参考时钟抖动
-- PLL 是否稳定锁定
-- PLL 带宽和 charge pump 配置
-- 模拟电源纹波
-
-典型现象：
-
-```text
-所有码型都出现类似水平扩散
-眼高正常但眼宽不足
-不同温度下抖动变化明显
-```
-
-此类问题不要优先调 TX swing。
-
----
-
-### 3.12 SSC 与 CDR
-
-#### `SSCEN` / `SSCRANGE` / `SSCMOD`
-
-控制扩频时钟。
-
-配置异常可能导致：
-
-- 低频周期性抖动
-- CDR 跟踪异常
-- 对端兼容性问题
-- 长时间压力测试掉链
-
-#### `CDRBW` / `CDRGAIN` / `CDRLOCK`
-
-控制 RX 时钟数据恢复。
-
-CDR 带宽过低：
-
-```text
-无法跟踪低频频偏或 SSC
-锁定慢
-频繁失锁
-```
-
-CDR 带宽过高：
-
-```text
-高频抖动进入恢复时钟
-噪声跟踪过多
-BER 变差
-```
-
----
-
-## 四、不同情形下的寄存器调整方法
-
-### 4.1 近端冲出上下电压限制
-
-现象：
-
-```text
-TX 输出幅度过大
-边沿处过冲或下冲
-波形冲出外部电压边界
-```
-
-调整顺序：
-
-```text
-1. TXSLEW         放缓边沿
-2. TXDEEMPH       减小去加重
-3. TXSWING        降低主摆幅
-4. TXTERM/TXIMP   优化输出阻抗
-```
-
-判断：
-
-- 仅边沿瞬间越界：优先调 `TXSLEW` 和终端。
-- 整个平台都过高：调 `TXSWING`。
-- 只有跳变符号过高：优先减小 `TXDEEMPH`。
-
----
-
-### 4.2 上下顶进 Eye Mask
-
-现象：
-
-```text
-Eye Height 不足
-上下波形进入中心禁区
-```
-
-近端和远端需要分开处理。
-
-近端眼高不足：
-
-```text
-1. TXSWING ↑
-2. 检查 PHY 模拟电源
-3. 检查 TXTERM
-```
-
-近端正常、远端眼高不足：
-
-```text
-1. TXDEEMPH / TXPOSTCURSOR ↑
-2. RXCTLE / RXEQ ↑
-3. 检查通道插入损耗
-4. 检查连接器、过孔和线缆
-```
-
----
-
-### 4.3 左右挤进 Eye Mask
-
-现象：
-
-```text
-Eye Width 不足
-Crossover 区域左右变厚
-眼高可能仍然正常
-```
-
-调整顺序：
-
-```text
-1. 检查 REFCLK 抖动
-2. 检查 PLL 和 SSC
-3. 检查 PHY 电源纹波
-4. 检查 TXTERM 和通道反射
-5. 调整 TXDEEMPH，减小 ISI
-6. 检查 CDR 配置
-```
-
-不要优先调整：
-
-```text
-TXSWING
-```
-
----
-
-### 4.4 近端正常、远端闭眼
-
-现象：
-
-```text
-TP1 或连接器附近通过
-经过通道后眼高、眼宽明显下降
-```
-
-调整顺序：
-
-```text
-1. TXDEEMPH ↑
-2. TXPOSTCURSOR ↑
-3. RXCTLE / RXEQ ↑
-4. RXDFE / RXADAPT 优化
-5. 检查 PCB、连接器和线缆损耗
-```
-
-如果远端主要表现为振铃而不是平滑闭合，应先处理阻抗，不能直接增加均衡。
-
----
-
-### 4.5 过冲、下冲或周期性振铃
-
-现象：
-
-```text
-跳变后出现一次或多次回摆
-振铃具有明显周期
-```
-
-调整顺序：
-
-```text
-1. TXTERM / TXIMP
-2. TXSLEW 放缓
-3. TXDEEMPH 减小
-4. 检查过孔、stub、连接器和 AC 电容焊盘
-```
-
-如果振铃周期固定，通常更接近板级反射问题。
-
----
-
-### 4.6 波形发毛、轨迹整体变厚
-
-现象：
-
-```text
-高低电平和边沿都不稳定
-轨迹没有单一明显反射周期
-```
-
-优先检查：
-
-```text
-PHY 模拟电源
-PLL 电源
-参考时钟
-邻线串扰
-地平面完整性
-示波器探头和夹具
-```
-
-可能涉及：
-
-```text
-PLLBW
-PLLCP
-SSC
-TXSLEW
-TXSWING
-```
-
-不要把电源噪声问题单纯当作 TX 幅度问题。
-
----
-
-### 4.7 Crossover 上下偏移
-
-现象：
-
-```text
-眼图上下不对称
-正负摆幅不同
-交叉点偏离中心电压
-```
-
-调整：
-
-```text
-1. TXCROSSOVER / TXCM
-2. 检查 TXSWING 和 TXTERM
-3. 检查 P/N 物理对称性
-4. 检查 AC 耦合电容
-```
-
----
-
-### 4.8 Crossover 左右扩散或偏移
-
-现象：
-
-```text
-交叉区域水平扩散
-上升沿和下降沿位置不一致
-```
-
-优先检查：
-
-```text
-REFCLK
-PLL
-P/N skew
-TX rise/fall 配置
-通道反射
-```
-
-可能调整：
-
-```text
-TXRISETUNE
-TXFALLTUNE
-TXDEEMPH
-TXTERM
-CDRBW
-```
-
----
-
-### 4.9 短线正常、长线失败
-
-调整顺序：
-
-```text
-1. TXDEEMPH ↑
-2. TXPOSTCURSOR ↑
-3. RXCTLE / RXEQ ↑
-4. 开启或优化 RXADAPT
-5. 检查长通道插入损耗
-```
-
-避免同时把所有参数调到最大，否则短通道可能过补偿。
-
----
-
-### 4.10 长线正常、短线失败
-
-常见原因：
-
-```text
-TX de-emphasis 过强
-RX CTLE 过强
-RX gain 过高
-CDR 配置不适合短通道
-```
-
-调整顺序：
-
-```text
-1. TXDEEMPH ↓
-2. RXCTLE / RXEQ ↓
-3. RXAFEGAIN ↓
-4. 检查自动均衡是否错误收敛
-```
-
----
-
-### 4.11 眼图通过但频繁 Recovery
-
-重点检查：
-
-```text
-RXEQ / RXCTLE
-RXDFE / RXADAPT
-CDRBW / CDRLOCK
-SSC
-RXTERM
-RXSQUELCH
-LFPSDET
-```
-
-同时检查：
-
-- 两个传输方向是否都正常
-- Host TX 通过不代表 Device TX 通过
-- 眼图通过不代表接收容限通过
-- 眼图通过不代表 LFPS 正常
-- 是否只有特定线缆或对端失败
-
----
-
-### 4.12 无法进入 SuperSpeed U0
-
-检查顺序：
-
-```text
-1. SSTX/SSRX 是否连接正确
-2. P/N polarity 是否正确或已配置翻转
-3. AC 耦合电容位置是否正确
-4. RX termination 是否开启
-5. Receiver Detection 是否成功
-6. LFPS 检测是否正常
-7. REFCLK 和 PLL 是否锁定
-8. RX squelch 是否过高
-9. TX swing 是否过低
-```
-
-相关寄存器：
-
-```text
-RXTERM
-RXDET
-LFPSDET
-LFPSVTH
-RXSQUELCH
-REFCLKSEL
-PLLLOCK
-TXSWING
-```
-
----
-
