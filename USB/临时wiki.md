@@ -8,7 +8,6 @@
 
 > 参考例程：`components/drivers/usb/cherryusb/demo/video_static_mjpeg_pump_template.c`，本文代码示例均基于该文件。
 
-  
 
 ## 1. 背景与要解决的问题
 
