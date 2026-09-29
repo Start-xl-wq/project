@@ -64,18 +64,33 @@
 
 ---
 
-### 3. [AMBA 片上总线](./AMBA/)
-* **架构总览**：[三大总线 (AXI / AHB / APB) 极简对比](./AMBA/三大总线（AXI%20AHB%20APB）极简对比.md)
-* **APB**：[慢速外设生存指南](./AMBA/APB/总线生存指南：慢速外设的“单行窄巷”.md)
-* **AHB**：[信号线与读写交互时序](./AMBA/AHB/总线基础原理：信号线与读写交互.md)
-* **AXI**：
-  * [核心笔记（一）：基础架构、物理通道与寻址规范](./AMBA/AXI/核心笔记（一）：基础架构、物理通道与寻址规范.md)
-  * [核心笔记（二）：突发传输 (Burst Transfer) 与底层时序规范](./AMBA/AXI/核心笔记（二）：%20突发传输%20(Burst%20Transfer)%20与底层时序规范.md)
+### 3. [AMBA 片上总线体系](./AMBA/)
+* **01_架构总览**：
+  * [AMBA 三大总线（AXI / AHB / APB）极简对比](./AMBA/01_架构总览/AMBA三大总线（AXI%20AHB%20APB）极简对比.md)
+* **02_APB与AHB**：
+  * [APB：慢速外设生存指南](./AMBA/02_APB与AHB/APB_慢速外设生存指南.md)
+  * [AHB：总线基础原理与读写交互](./AMBA/02_APB与AHB/AHB_总线基础原理与读写交互.md)
+* **03_AXI总线深入**：
+  * [AXI核心笔记（一）：基础架构、物理通道与寻址规范](./AMBA/03_AXI总线深入/AXI核心笔记（一）：基础架构、物理通道与寻址规范.md)
+  * [AXI核心笔记（二）：突发传输 (Burst) 与底层时序规范](./AMBA/03_AXI总线深入/AXI核心笔记（二）：突发传输(Burst)与底层时序规范.md)
+  * [AXI核心笔记（三）：乱序传输、交织与 ID 机制](./AMBA/03_AXI总线深入/AXI核心笔记（三）：乱序传输、交织与ID机制.md)
+  * [AXI核心笔记（四）：4KB 边界红线、原子操作与总线响应](./AMBA/03_AXI总线深入/AXI核心笔记（四）：4KB边界红线、原子操作与总线响应.md)
+* **04_芯片验证与故障定位**：
+  * [AXI 总线错误响应 (SLVERR / DECERR) 与 CPU 死锁定位指南](./AMBA/04_芯片验证与故障定位/AXI总线错误响应(SLVERR_DECERR)与CPU死锁定位.md)
 
 ---
 
-### 4. [MMC 存储与扩展总线](./MMC/)
-* **eMMC**：[引导工作模式 (Original & Alternative Boot)](./MMC/eMMC/eMMC%20引导工作模式.md)
-* **SDIO**：[驱动能力 (Driver Strength Type A~D) 与阻抗匹配](./MMC/SDIO/SDIO%20驱动能力.md)
-* **综合对比**：[MMC / SD / SDIO 枚举初始化时钟对比与 I/O 驱动模式 (OD vs PP)](./MMC/MMC枚举初始化时钟对比.md)
-* **SPEC 规格书**：`sdips_gravityxr_sdio_emmc_host_iip_databook.pdf`
+### 4. [MMC 存储与扩展总线体系](./MMC/)
+* **01_协议基础与速率模式**：
+  * [eMMC 与 SD / SDIO 速率模式全景 (Legacy 到 HS400 / SDR104)](./MMC/01_协议基础与速率模式/eMMC与SD_SDIO速率模式全景(Legacy到HS400_SDR104).md)
+  * [MMC / SD / SDIO 枚举初始化时钟对比与 I/O 驱动模式](./MMC/01_协议基础与速率模式/MMC枚举初始化时钟对比与IO驱动模式.md)
+  * [eMMC 引导工作模式 (Boot Operation)](./MMC/01_协议基础与速率模式/eMMC引导工作模式(Boot%20Operation).md)
+  * [SDIO 驱动能力 (Driver Strength) 与阻抗匹配](./MMC/01_协议基础与速率模式/SDIO驱动能力(Driver%20Strength)与阻抗匹配.md)
+* **02_核心机制与高速时序**：
+  * [高速模式 Tuning 调谐机制 (CMD21 / CMD19 采样相位扫描)](./MMC/02_核心机制与高速时序/高速模式Tuning调谐机制(CMD21_CMD19采样相位扫描).md)
+* **03_控制器IP与驱动架构**：
+  * [DWC MSHC 控制器架构与 ADMA2 / ADMA3 描述符机制](./MMC/03_控制器IP与驱动架构/DWC_MSHC控制器架构与ADMA2描述符机制.md)
+* **05_经典故障排查**：
+  * [MMC / SD / SDIO 常见错误 (CRC / Timeout / 卡死) 原厂排查定位指南](./MMC/05_经典故障排查/CRC错误、超时与卡死(Data_Timeout)排查定位.md)
+* **SPEC 规格书**：
+  * `sdips_gravityxr_sdio_emmc_host_iip_databook.pdf`
