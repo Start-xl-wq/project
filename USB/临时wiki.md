@@ -639,6 +639,7 @@ eFuse blk锁定操作不可回退。efuse0 blk0~blk6为出厂私有区域，普�
 
 无
 
+
 ### 2.2.4 错误码
 
 eFuse TEE API成功时返回TEE_SUCCESS，失败时直接返回底层eFuse驱动状态。由于接口返回类型为TEE_Result，负数状态以对应的32bit无符号值表示。
