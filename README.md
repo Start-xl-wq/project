@@ -1,33 +1,56 @@
 # 嵌入式底层与总线协议实战笔记库
 
-本笔记库归档了在芯片 Bring-up、Linux 底层驱动开发以及总线协议栈调优中的实战经验、核心概念与操作指南。
+本笔记库归档了在芯片 Bring-up、芯片原厂驱动开发与系统级芯片验证 (CV / Post-Silicon Validation) 以及总线协议栈调优中的实战经验、核心规范与操作指南。
 
 ---
 
 ## 📚 知识目录与模块导航
 
-### 1. [USB 体系](./USB/)
-* **2.0 基础与电气**：[物理链路建立与电气协商](./USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md)、[枚举与描述符体系](./USB/2.0/USB驱动开发笔记（二）：枚举%20(Enumeration)%20与描述符%20(Descriptor)%20体系.md)、[驱动开发学习计划](./USB/2.0/USB%202.0%20Device%20驱动开发学习计划.md)
-* **基本概念 & PHY 调优**：[OTG ID 脚与 Host/Device 角色](./USB/基本概念/micro-USB%20OTG%20ID%20脚与%20Host%20%20Device%20角色说明.md)、[链路电源状态 (L0-L3 / U0-U3)](./USB/基本概念/USB%202.0%20&%20USB%203.x%20链路电源状态.md)、[USB2 PHY 眼图调优](./USB/基本概念/USB2%20PHY%20眼图调试及调优.md)、[USB3 PHY 眼图调优](./USB/基本概念/USB3%20PHY%20眼图概念及调优.md)
-* **DWC3 控制器深度**：[DWC3 core.c 源码学习笔记](./USB/DWC3/DWC3%20`core.c`%20学习笔记.md)、[DWC3 完整学习路线](./USB/DWC3/USB%20DWC3%20学习路线笔记.md)
-* **低功耗与休眠唤醒**：[USB Suspend / Resume / Wakeup 场景](./USB/休眠唤醒/USB%20Suspend%20%20Resume%20%20Wakeup%20场景说明.md)、[USB 3.x 休眠与唤醒逻辑](./USB/休眠唤醒/USB%203.x%20休眠与唤醒逻辑.md)
-* **Gadget Class 快速验证操作指南**：
-  * [ACM (虚拟串口)](./USB/Class/ACM.md)
-  * [ADB (Android 调试桥)](./USB/Class/ADB.md)
-  * [HID (虚拟键盘/鼠标)](./USB/Class/HID.md)
-  * [RNDIS (以太网卡)](./USB/Class/RNDIS.md)
-  * [UAS / BOT (USB 大容量存储)](./USB/Class/UAS.md)
-  * [U盘 (Mass Storage 镜像挂载与验证)](./USB/Class/U盘.md)
-  * [UVC (摄像头类)](./USB/Class/UVC.md)
-  * [算力棒架构与时序](./USB/Class/算力棒/USB%20算力棒驱动%20—%20总体架构.md)
-* **实战排查**：[USB Device 插拔状态更新异常](./USB/场景问题/usb%20device%20插拔状态更新异常.md)
+### 1. [USB 体系（驱动与原厂 CV 全景）](./USB/)
+
+* **01_硬件与PHY**：
+  * [micro-USB OTG ID脚与角色说明](./USB/01_硬件与PHY/micro-USB%20OTG%20ID脚与角色说明.md)
+  * [Type-C CC 逻辑与 PD 协商基础](./USB/01_硬件与PHY/Type-C_CC逻辑与PD协商基础.md)
+  * [USB2 PHY 眼图调试及调优](./USB/01_硬件与PHY/USB2%20PHY眼图调试及调优.md)
+  * [USB3 PHY 眼图概念及调优](./USB/01_硬件与PHY/USB3%20PHY眼图概念及调优.md)
+  * [PIPE 与 UTMI+ 控制器与 PHY 接口规范](./USB/01_硬件与PHY/PIPE与UTMI+控制器接口规范.md)
+* **02_协议层_USB2.0**：
+  * [物理链路建立与电气协商](./USB/02_协议层_USB2.0/物理链路建立与电气协商.md)
+  * [枚举与描述符体系](./USB/02_协议层_USB2.0/枚举与描述符体系.md)
+  * [USB Suspend / Resume / Wakeup 场景说明](./USB/02_协议层_USB2.0/USB%20Suspend%20Resume%20Wakeup%20场景说明.md)
+  * [USB 2.0 Device 驱动开发学习计划](./USB/02_协议层_USB2.0/USB%202.0%20Device%20驱动开发学习计划.md)
+* **03_协议层_USB3.x**：
+  * [LTSSM 链路训练状态机深度解析](./USB/03_协议层_USB3.x/LTSSM链路状态机深度解析.md)
+  * [USB 3.x 休眠与唤醒逻辑](./USB/03_协议层_USB3.x/USB%203.x%20休眠与唤醒逻辑.md)
+  * [USB 2.0 & USB 3.x 链路电源状态 (L0-L3 / U0-U3)](./USB/03_协议层_USB3.x/USB%202.0%20&%20USB%203.x%20链路电源状态.md)
+* **04_控制器IP架构**：
+  * [DWC3 core.c 学习笔记](./USB/04_控制器IP架构/DWC3%20core.c%20学习笔记.md)
+  * [USB DWC3 学习路线笔记](./USB/04_控制器IP架构/USB%20DWC3%20学习路线笔记.md)
+  * [DWC3 DMA 描述符环 (TRB) 与数据流转](./USB/04_控制器IP架构/DWC3_DMA描述符环(TRB)与数据流转.md)
+* **05_Linux内核驱动栈**：
+  * [Linux USB Gadget 核心架构与数据流转模型](./USB/05_Linux内核驱动栈/Linux_USB_Gadget核心架构与数据流转模型.md)
+* **06_Class功能类实战（快速验证操作）**：
+  * [ACM (虚拟串口)](./USB/06_Class功能类实战/ACM.md)
+  * [ADB (Android 调试桥)](./USB/06_Class功能类实战/ADB.md)
+  * [HID (虚拟键盘/鼠标)](./USB/06_Class功能类实战/HID.md)
+  * [MSC (标准 U 盘/大容量存储)](./USB/06_Class功能类实战/MSC.md)
+  * [UAS (USB Attached SCSI)](./USB/06_Class功能类实战/UAS.md)
+  * [RNDIS (虚拟以太网卡)](./USB/06_Class功能类实战/RNDIS.md)
+  * [UVC (摄像头推流)](./USB/06_Class功能类实战/UVC.md)
+  * [算力棒架构与时序全集](./USB/06_Class功能类实战/算力棒/)
+* **07_芯片原厂验证_CV**：
+  * [芯片 Bring-up 点亮 Checklist (USB 专栏)](./USB/07_芯片原厂验证_CV/芯片Bring-up点亮Checklist.md)
+  * [USB-IF 一致性测试实战 (USBCV 与合规认证)](./USB/07_芯片原厂验证_CV/USB-IF一致性测试实战(USBCV与合规).md)
+  * [USB 协议分析仪 (LeCroy / Ellisys) 抓包与定位指南](./USB/07_芯片原厂验证_CV/协议分析仪(LeCroy_Ellisys)抓包指南.md)
+* **08_经典问题定位与案例**：
+  * [USB Device 插拔状态更新异常分析](./USB/08_经典问题定位与案例/usb%20device%20插拔状态更新异常.md)
 
 ---
 
-### 2. [PCIe 体系](./PCIe/)
-* **物理层 (Physical Layer)**：[物理层信号](./PCIe/物理层/PCIe%20基础之物理层-信号.md)、[LTSSM 链路建立与训练](./PCIe/物理层/PCIe%20基础之物理层-链路建立和训练%20LTSSM.md)
-* **链路层 (Data Link Layer)**：[基础概念](./PCIe/链路层/PCIe%20基础之链路层%20基础概念.md)、[DLLP 报文](./PCIe/链路层/PCIe%20基础之链路层%20DLLP.md)、[流量控制 Flow Control](./PCIe/链路层/PCIe%20基础之链路层%20流控.md)
-* **事务层 (Transaction Layer)**：[TLP 格式](./PCIe/事务层/PCIe%20基础之事务层%20TLP%20格式.md)、[TLP 机制](./PCIe/事务层/PCIe%20基础之事务层%20TLP%20机制.md)、[TLP 性能与开销](./PCIe/事务层/PCIe%20基础之事务层%20TLP%20性能.md)、[总线枚举](./PCIe/事务层/PCIe%20基础之事务层-枚举.md)
+### 2. [PCIe 体系（Bring-up 与总线）](./PCIe/)
+* **物理层**：[物理层信号](./PCIe/物理层/PCIe%20基础之物理层-信号.md)、[LTSSM 链路建立与训练](./PCIe/物理层/PCIe%20基础之物理层-链路建立和训练%20LTSSM.md)
+* **链路层**：[基础概念](./PCIe/链路层/PCIe%20基础之链路层%20基础概念.md)、[DLLP 报文](./PCIe/链路层/PCIe%20基础之链路层%20DLLP.md)、[流量控制 Flow Control](./PCIe/链路层/PCIe%20基础之链路层%20流控.md)
+* **事务层**：[TLP 格式](./PCIe/事务层/PCIe%20基础之事务层%20TLP%20格式.md)、[TLP 机制](./PCIe/事务层/PCIe%20基础之事务层%20TLP%20机制.md)、[TLP 性能与开销](./PCIe/事务层/PCIe%20基础之事务层%20TLP%20性能.md)、[总线枚举](./PCIe/事务层/PCIe%20基础之事务层-枚举.md)
 * **DataPass & 性能**：[数据交互模型](./PCIe/DataPass/PCIe%20基础之DataPass%20数据交互.md)、[带宽建模与瓶颈分析](./PCIe/DataPass/PCIe%20基础之Datapass%20带宽建模.md)
 * **芯片 Bring-up 实战系列 (一 至 八)**：
   1. [链路训练与硬件三板斧](./PCIe/实战进阶/芯片%20Bring-up%20实战笔记%20(一)：PCIe%20点亮与链路训练.md)
