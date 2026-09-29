@@ -1,3 +1,7 @@
+# AMBA 三大总线（AXI / AHB / APB）极简对比
+
+---
+
 ## 零、 核心对比速查表
 
 | 对比维度             | APB (Advanced Peripheral Bus) | AHB (Advanced High-performance) | AXI (Advanced eXtensible)             |

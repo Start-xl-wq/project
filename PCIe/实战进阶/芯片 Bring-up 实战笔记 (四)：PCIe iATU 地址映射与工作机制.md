@@ -1,3 +1,7 @@
+# 芯片 Bring-up 实战笔记 (四)：PCIe iATU 地址映射与工作机制
+
+---
+
 # 一、 基本概念界定
 在 PCIe 控制器中，跨越“CPU 内存域（AXI 总线地址）”和“PCIe 总线域（PCIe 总线地址）”的桥梁就是 iATU。
 * Outbound iATU (Tx)：控制主动发送。将内部 AXI 物理地址翻译为外部 PCIe 总线地址。

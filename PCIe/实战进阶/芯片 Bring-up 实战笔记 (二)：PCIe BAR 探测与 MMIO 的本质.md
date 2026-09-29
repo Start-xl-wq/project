@@ -1,3 +1,7 @@
+# 芯片 Bring-up 实战笔记 (二)：PCIe BAR 探测与 MMIO 的本质
+
+---
+
 # 1. 核心问题：Host 如何知道设备需要多大的地址空间？
 在 PCIe 枚举阶段，Host 完全不知道插上来的设备（如 Wi-Fi 模组）需要占用多少内存空间。Host 是通过操作设备的 BAR（Base Address Register，基地址寄存器） 来动态“探测”出设备的空间需求的。
 ## 📌 BAR 探测算法（经典面试必考）

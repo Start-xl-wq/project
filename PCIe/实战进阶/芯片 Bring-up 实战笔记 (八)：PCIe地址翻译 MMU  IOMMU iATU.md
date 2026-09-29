@@ -1,3 +1,7 @@
+# 芯片 Bring-up 实战笔记 (八)：PCIe 地址翻译 MMU / IOMMU / iATU
+
+---
+
 ## 结论先行（TL;DR）
 
 在现代主流的 “Host (带 IOMMU) + 简单外设 (如 Wi-Fi 芯片)” 架构中：
