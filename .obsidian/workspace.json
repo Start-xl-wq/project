@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
+                "file": "MMC/SDIO/SDIO 驱动能力.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "USB 2.0 Device 驱动开发学习计划"
+              "title": "SDIO 驱动能力"
             }
           }
         ]
@@ -196,6 +196,7 @@
   },
   "active": "85d6534de8323b9d",
   "lastOpenFiles": [
+    "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
     "USB/场景问题/usb device 插拔状态更新异常.md",
     "USB/Class/虚拟串口 ACM.md",
     "AMBA/三大总线（AXI AHB APB）极简对比.md",
@@ -213,7 +214,6 @@
     "MMC/MMC枚举初始化时钟对比.md",
     "MMC/SDIO/SDIO 驱动能力.md",
     "2026-08-04.md",
-    "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
     "USB/休眠唤醒/USB 3.x 休眠与唤醒逻辑.md",
     "USB/休眠唤醒/USB Suspend  Resume  Wakeup 场景说明.md",
     "USB/2.0/USB驱动开发笔记（一）：物理链路建立与电气协商.md",
