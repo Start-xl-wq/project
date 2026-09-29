@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "README.md",
+                "file": "AMBA/三大总线（AXI AHB APB）极简对比.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "README"
+              "title": "三大总线（AXI AHB APB）极简对比"
             }
           }
         ]
@@ -166,16 +166,6 @@
             }
           },
           {
-            "id": "c024a5ad2b847381",
-            "type": "leaf",
-            "state": {
-              "type": "copilot-chat-view",
-              "state": {},
-              "icon": "lucide-ghost",
-              "title": "copilot-chat-view"
-            }
-          },
-          {
             "id": "678e354f65be8173",
             "type": "leaf",
             "state": {
@@ -190,7 +180,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 533.5
+    "width": 268.5
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -204,8 +194,9 @@
       "obsidian-git:Open Git source control": false
     }
   },
-  "active": "c024a5ad2b847381",
+  "active": "85d6534de8323b9d",
   "lastOpenFiles": [
+    "README.md",
     "copilot/copilot-conversations/hi@20260929_163704.md",
     "copilot/copilot-custom-prompts/Clip Web Page.md",
     "copilot/copilot-custom-prompts/Clip YouTube Transcript.md",
@@ -232,7 +223,6 @@
     "USB/2.0/USB 2.0 Device 驱动开发学习计划.md",
     "USB/场景问题/usb device 插拔状态更新异常.md",
     "USB/Class/虚拟串口 ACM.md",
-    "README.md",
     "USB/临时wiki.md",
     "USB/基本概念/USB2 PHY 眼图调试及调优.md",
     "USB/场景问题",
