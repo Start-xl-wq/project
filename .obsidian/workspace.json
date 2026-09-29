@@ -171,8 +171,18 @@
             "state": {
               "type": "copilot-chat-view",
               "state": {},
-              "icon": "message-square",
-              "title": "Copilot"
+              "icon": "lucide-ghost",
+              "title": "copilot-chat-view"
+            }
+          },
+          {
+            "id": "678e354f65be8173",
+            "type": "leaf",
+            "state": {
+              "type": "git-view",
+              "state": {},
+              "icon": "git-pull-request",
+              "title": "Source Control"
             }
           }
         ],
@@ -191,12 +201,12 @@
       "templates:插入模板": false,
       "command-palette:打开命令面板": false,
       "bases:新建数据库": false,
-      "obsidian-git:Open Git source control": false,
-      "copilot:Open Copilot Chat": false
+      "obsidian-git:Open Git source control": false
     }
   },
-  "active": "85d6534de8323b9d",
+  "active": "c024a5ad2b847381",
   "lastOpenFiles": [
+    "copilot/copilot-conversations/hi@20260929_163704.md",
     "copilot/copilot-custom-prompts/Clip Web Page.md",
     "copilot/copilot-custom-prompts/Clip YouTube Transcript.md",
     "copilot/copilot-custom-prompts/Rewrite as tweet thread.md",
@@ -225,7 +235,6 @@
     "README.md",
     "USB/临时wiki.md",
     "USB/基本概念/USB2 PHY 眼图调试及调优.md",
-    "USB/基本概念/USB3 PHY 眼图概念及调优.md",
     "USB/场景问题",
     "USB/Class/算力棒",
     "USB/基本概念",
