@@ -78,7 +78,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 355.5
+    "width": 411.5
   },
   "right": {
     "id": "d0a0e296cb8e0dc4",
@@ -194,7 +194,7 @@
       "copilot:Open Copilot Chat": false
     }
   },
-  "active": "85d6534de8323b9d",
+  "active": "1e0e3e5c3c275b3a",
   "lastOpenFiles": [
     "README.md",
     "USB/临时wiki.md",
