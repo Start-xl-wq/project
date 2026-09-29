@@ -1,5 +1,5 @@
 {
-  "userId": "e2ede14b-205c-4f73-a65c-148a949cefb3",
+  "userId": "b6c76247-bdd0-4823-8d69-934036079ffa",
   "isPlusUser": false,
   "plusLicenseKey": "",
   "openAIApiKey": "",
@@ -23,12 +23,12 @@
   "githubCopilotAccessToken": "",
   "githubCopilotToken": "",
   "githubCopilotTokenExpiresAt": 0,
-  "defaultChainType": "copilot_plus",
-  "defaultModelKey": "gpt-5.4-mini|3rd party (openai-format)",
+  "defaultChainType": "llm_chain",
+  "defaultModelKey": "google/gemini-2.5-flash|openrouterai",
   "embeddingModelKey": "openai/text-embedding-3-small|openrouterai",
   "temperature": 0.1,
   "maxTokens": 6000,
-  "contextTurns": 50,
+  "contextTurns": 15,
   "userSystemPrompt": "",
   "openAIProxyBaseUrl": "",
   "openAIEmbeddingProxyBaseUrl": "",
@@ -91,7 +91,7 @@
     {
       "name": "gpt-5.4-mini",
       "provider": "openai",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "core": true,
       "capabilities": [
@@ -102,42 +102,42 @@
     {
       "name": "google/gemini-3.5-flash",
       "provider": "openrouterai",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
     {
       "name": "claude-sonnet-4-6",
       "provider": "anthropic",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
     {
       "name": "gemini-3.5-flash",
       "provider": "google",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
     {
       "name": "gemini-3.1-flash-lite",
       "provider": "google",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
@@ -148,7 +148,7 @@
     {
       "name": "gemini-2.5-flash",
       "provider": "google",
-      "enabled": false,
+      "enabled": true,
       "isBuiltIn": true,
       "projectEnabled": true,
       "capabilities": [
@@ -162,8 +162,8 @@
       "enabled": false,
       "isBuiltIn": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
@@ -257,8 +257,8 @@
       "enabled": false,
       "isBuiltIn": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
@@ -268,8 +268,8 @@
       "enabled": false,
       "isBuiltIn": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
@@ -279,8 +279,8 @@
       "enabled": false,
       "isBuiltIn": true,
       "capabilities": [
-        "reasoning",
-        "vision"
+        "vision",
+        "reasoning"
       ],
       "apiKey": ""
     },
@@ -316,7 +316,7 @@
       "name": "deepseek-ai/DeepSeek-V3",
       "provider": "siliconflow",
       "enabled": false,
-      "isBuiltIn": true,
+      "isBuiltIn": false,
       "baseUrl": "https://api.siliconflow.com/v1",
       "apiKey": ""
     },
@@ -324,26 +324,12 @@
       "name": "deepseek-ai/DeepSeek-R1",
       "provider": "siliconflow",
       "enabled": false,
-      "isBuiltIn": true,
+      "isBuiltIn": false,
       "baseUrl": "https://api.siliconflow.com/v1",
       "capabilities": [
         "reasoning"
       ],
       "apiKey": ""
-    },
-    {
-      "name": "gpt-5.4-mini",
-      "provider": "3rd party (openai-format)",
-      "enabled": true,
-      "isBuiltIn": false,
-      "baseUrl": "https://apirouter.axera-tech.com/v1",
-      "apiKey": "",
-      "isEmbeddingModel": false,
-      "capabilities": [],
-      "stream": true,
-      "displayName": "newapi",
-      "maxTokens": 128000,
-      "temperature": 2
     }
   ],
   "activeEmbeddingModels": [
@@ -517,7 +503,7 @@
   "diffViewMode": "split",
   "userSystemPromptsFolder": "copilot/system-prompts",
   "defaultSystemPromptTitle": "",
-  "autoCompactThreshold": 1000000,
+  "autoCompactThreshold": 128000,
   "convertedDocOutputFolder": "",
   "_keychainOnly": true,
   "_keychainVaultId": "5e62bb64"

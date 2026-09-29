@@ -78,7 +78,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 411.5
+    "width": 252.5
   },
   "right": {
     "id": "d0a0e296cb8e0dc4",
@@ -176,11 +176,11 @@
             }
           }
         ],
-        "currentTab": 4
+        "currentTab": 5
       }
     ],
     "direction": "horizontal",
-    "width": 300
+    "width": 533.5
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -197,6 +197,9 @@
   },
   "active": "85d6534de8323b9d",
   "lastOpenFiles": [
+    "copilot/copilot-conversations/hi@20260929_162300.md",
+    "copilot/copilot-conversations",
+    "copilot",
     "AMBA/三大总线（AXI AHB APB）极简对比.md",
     "MMC/MMC枚举初始化时钟对比.md",
     "MMC/SDIO/SDIO 驱动能力.md",
@@ -221,14 +224,11 @@
     "USB/基本概念/USB 2.0 & USB 3.x 链路电源状态.md",
     "USB/DWC3/USB DWC3 学习路线笔记.md",
     "copilot/copilot-conversations/分析一下@20260804_144358.md",
-    "copilot/copilot-conversations",
-    "copilot",
     "USB/DWC3/DWC3 `core.c` 学习笔记.md",
     "USB/基本概念/micro-USB OTG ID 脚与 Host  Device 角色说明.md",
     "copilot/copilot-conversations/优化一下文档@20260710_111544.md",
     "USB/基本概念",
     "USB/休眠唤醒",
-    "copilot/copilot-custom-prompts/Clip Web Page.md",
     "copilot/copilot-custom-prompts",
     "USB/验证",
     "USB/Class",
