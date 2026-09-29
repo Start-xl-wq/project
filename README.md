@@ -14,8 +14,10 @@
 * **Gadget Class 快速验证操作指南**：
   * [ACM (虚拟串口)](./USB/Class/ACM.md)
   * [ADB (Android 调试桥)](./USB/Class/ADB.md)
+  * [HID (虚拟键盘/鼠标)](./USB/Class/HID.md)
   * [RNDIS (以太网卡)](./USB/Class/RNDIS.md)
   * [UAS / BOT (USB 大容量存储)](./USB/Class/UAS.md)
+  * [U盘 (Mass Storage 镜像挂载与验证)](./USB/Class/U盘.md)
   * [UVC (摄像头类)](./USB/Class/UVC.md)
   * [算力棒架构与时序](./USB/Class/算力棒/USB%20算力棒驱动%20—%20总体架构.md)
 * **实战排查**：[USB Device 插拔状态更新异常](./USB/场景问题/usb%20device%20插拔状态更新异常.md)
