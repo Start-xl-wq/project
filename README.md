@@ -13,6 +13,7 @@
   * [Type-C CC 逻辑与 PD 协商基础](./USB/01_硬件与PHY/Type-C_CC逻辑与PD协商基础.md)
   * [USB2 PHY 眼图调试及调优](./USB/01_硬件与PHY/USB2%20PHY眼图调试及调优.md)
   * [USB3 PHY 眼图概念及调优](./USB/01_硬件与PHY/USB3%20PHY眼图概念及调优.md)
+  * [U2/U3 测试模式与 CP 码型切换](./USB/01_硬件与PHY/测试模式.md)
   * [PIPE 与 UTMI+ 控制器与 PHY 接口规范](./USB/01_硬件与PHY/PIPE与UTMI+控制器接口规范.md)
 * **02_协议层_USB2.0**：
   * [物理链路建立与电气协商](./USB/02_协议层_USB2.0/物理链路建立与电气协商.md)
@@ -37,6 +38,9 @@
   * [UAS (USB Attached SCSI)](./USB/06_Class功能类实战/UAS.md)
   * [RNDIS (虚拟以太网卡)](./USB/06_Class功能类实战/RNDIS.md)
   * [UVC (摄像头推流)](./USB/06_Class功能类实战/UVC.md)
+  * [RTT CherryUSB UVC 操作指南](./USB/06_Class功能类实战/UVC/RTT_CherryUSB_UVC操作指南.md)
+  * [CherryUSB UVC 接口设计](./USB/06_Class功能类实战/UVC/CherryUSB_UVC接口设计.md)
+  * [U-Boot USB DFU：下载文件到 RAM](./USB/06_Class功能类实战/DFU.md)
   * [算力棒架构与时序全集](./USB/06_Class功能类实战/算力棒/)
 * **07_芯片原厂验证_CV**：
   * [芯片 Bring-up 点亮 Checklist (USB 专栏)](./USB/07_芯片原厂验证_CV/芯片Bring-up点亮Checklist.md)
@@ -44,6 +48,8 @@
   * [USB 协议分析仪 (LeCroy / Ellisys) 抓包与定位指南](./USB/07_芯片原厂验证_CV/协议分析仪(LeCroy_Ellisys)抓包指南.md)
 * **08_经典问题定位与案例**：
   * [USB Device 插拔状态更新异常分析](./USB/08_经典问题定位与案例/usb%20device%20插拔状态更新异常.md)
+  * [DWC3 UVC 重新开流绿屏](./USB/08_经典问题定位与案例/DWC3_UVC重新开流绿屏.md)
+  * [DWC3 UVC 停止拔插后不出流](./USB/08_经典问题定位与案例/DWC3_UVC停止拔插后不出流.md)
 
 ---
 
